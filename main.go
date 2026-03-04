@@ -12,6 +12,7 @@ const (
 	INT   = "INT"
 	PLUS  = "PLUS"
 	MINUS = "MINUS"
+	XOR   = "XOR"
 	EOF   = "EOF"
 )
 
@@ -69,6 +70,12 @@ func (l *Lexer) selectNext() {
 		return
 	}
 
+	if ch == '^' {
+		l.Next = Token{Type: XOR, Value: "^"}
+		l.position++
+		return
+	}
+
 	panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
 }
 
@@ -81,7 +88,7 @@ func parseExpression(l *Lexer) int {
 	result, _ := strconv.Atoi(l.Next.Value)
 	l.selectNext()
 
-	for l.Next.Type == PLUS || l.Next.Type == MINUS {
+	for l.Next.Type == PLUS || l.Next.Type == MINUS || l.Next.Type == XOR {
 		op := l.Next.Type
 		l.selectNext()
 
@@ -94,8 +101,10 @@ func parseExpression(l *Lexer) int {
 
 		if op == PLUS {
 			result += val
-		} else {
+		} else if op == MINUS {
 			result -= val
+		} else {
+			result ^= val
 		}
 	}
 
