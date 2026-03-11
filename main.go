@@ -9,11 +9,14 @@ import (
 
 // Token types
 const (
-	INT   = "INT"
-	PLUS  = "PLUS"
-	MINUS = "MINUS"
-	XOR   = "XOR"
-	EOF   = "EOF"
+	INT       = "INT"
+	PLUS      = "PLUS"
+	MINUS     = "MINUS"
+	MULT      = "MULT"
+	DIV       = "DIV"
+	OPEN_PAR  = "OPEN_PAR"
+	CLOSE_PAR = "CLOSE_PAR"
+	EOF       = "EOF"
 )
 
 // Token holds the type and value of a lexical token
@@ -58,56 +61,81 @@ func (l *Lexer) selectNext() {
 		return
 	}
 
-	if ch == '+' {
+	switch ch {
+	case '+':
 		l.Next = Token{Type: PLUS, Value: "+"}
-		l.position++
-		return
-	}
-
-	if ch == '-' {
+	case '-':
 		l.Next = Token{Type: MINUS, Value: "-"}
-		l.position++
-		return
+	case '*':
+		l.Next = Token{Type: MULT, Value: "*"}
+	case '/':
+		l.Next = Token{Type: DIV, Value: "/"}
+	case '(':
+		l.Next = Token{Type: OPEN_PAR, Value: "("}
+	case ')':
+		l.Next = Token{Type: CLOSE_PAR, Value: ")"}
+	default:
+		panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
 	}
-
-	if ch == '^' {
-		l.Next = Token{Type: XOR, Value: "^"}
-		l.position++
-		return
-	}
-
-	panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
+	l.position++
 }
 
-// parseExpression parses and evaluates: INT ( ('+' | '-') INT )*
-func parseExpression(l *Lexer) int {
-	if l.Next.Type != INT {
-		panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
-	}
-
-	result, _ := strconv.Atoi(l.Next.Value)
-	l.selectNext()
-
-	for l.Next.Type == PLUS || l.Next.Type == MINUS || l.Next.Type == XOR {
-		op := l.Next.Type
+// parseFactor parses: ("+" | "-") FACTOR | "(" EXPRESSION ")" | NUMBER
+func parseFactor(l *Lexer) int {
+	if l.Next.Type == PLUS {
 		l.selectNext()
-
-		if l.Next.Type != INT {
-			panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
+		return +parseFactor(l)
+	}
+	if l.Next.Type == MINUS {
+		l.selectNext()
+		return -parseFactor(l)
+	}
+	if l.Next.Type == OPEN_PAR {
+		l.selectNext()
+		result := parseExpression(l)
+		if l.Next.Type != CLOSE_PAR {
+			panic(fmt.Sprintf("[Parser] Expected ')' but got %s", l.Next.Type))
 		}
-
+		l.selectNext()
+		return result
+	}
+	if l.Next.Type == INT {
 		val, _ := strconv.Atoi(l.Next.Value)
 		l.selectNext()
+		return val
+	}
+	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
+}
 
-		if op == PLUS {
-			result += val
-		} else if op == MINUS {
-			result -= val
+// parseTerm parses: FACTOR { ("*" | "/") FACTOR }
+func parseTerm(l *Lexer) int {
+	result := parseFactor(l)
+	for l.Next.Type == MULT || l.Next.Type == DIV {
+		op := l.Next.Type
+		l.selectNext()
+		val := parseFactor(l)
+		if op == MULT {
+			result *= val
 		} else {
-			result ^= val
+			result /= val
 		}
 	}
+	return result
+}
 
+// parseExpression parses: TERM { ("+" | "-") TERM }
+func parseExpression(l *Lexer) int {
+	result := parseTerm(l)
+	for l.Next.Type == PLUS || l.Next.Type == MINUS {
+		op := l.Next.Type
+		l.selectNext()
+		val := parseTerm(l)
+		if op == PLUS {
+			result += val
+		} else {
+			result -= val
+		}
+	}
 	return result
 }
 

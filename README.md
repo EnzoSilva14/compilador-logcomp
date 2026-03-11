@@ -4,16 +4,39 @@
 
 This repository is monitored by Compiler Tester for automatic compilation status.
 
-## Syntax Diagram (v1.0)
+## Syntax Diagram (v1.1)
 
 ```
 expression:
 
-                     ┌─────────────────────────────────┐
-                     │                                 │
-                     ▼                                 │
-──► ── [INT] ── ──►──┴──┬── ['+'] ──┬── [INT] ── ──►──┘── ► EOF
-                        └── ['-'] ──┘
+            ┌────────────────────────────────┐
+            │                                │
+            ▼                                │
+──► [TERM] ─┴─┬─ ['+'] ─┬─ [TERM] ──────────┘──► EOF
+              └─ ['-'] ─┘
+
+term:
+
+              ┌────────────────────────────────┐
+              │                                │
+              ▼                                │
+──► [FACTOR] ─┴─┬─ ['*'] ─┬─ [FACTOR] ────────┘
+                └─ ['/'] ─┘
+
+factor:
+
+──►─┬─ ['+'] ─┬─ [FACTOR] ──────────────────────►
+    ├─ ['-'] ─┘
+    ├─ '(' ── [EXPRESSION] ── ')' ───────────────►
+    └─ [NUMBER] ──────────────────────────────────►
 ```
 
-Grammar rule: `expression = INT { ( '+' | '-' ) INT }`
+## Grammar (EBNF)
+
+```ebnf
+EXPRESSION = TERM, { ("+" | "-"), TERM } ;
+TERM       = FACTOR, { ("*" | "/"), FACTOR } ;
+FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER ;
+NUMBER     = DIGIT, { DIGIT } ;
+DIGIT      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+```
