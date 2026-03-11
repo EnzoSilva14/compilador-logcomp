@@ -27,8 +27,17 @@ factor:
 
 ──►─┬─ ['+'] ─┬─ [FACTOR] ──────────────────────►
     ├─ ['-'] ─┘
-    ├─ '(' ── [EXPRESSION] ── ')' ───────────────►
-    └─ [NUMBER] ──────────────────────────────────►
+    └─ [POWER] ───────────────────────────────────►
+
+power:
+
+──► [ATOM] ─┬──────────────────────────────────►
+            └─ ['**'] ── [FACTOR] ──────────────►
+
+atom:
+
+──►─┬─ '(' ── [EXPRESSION] ── ')' ─────────────►
+    └─ [NUMBER] ────────────────────────────────►
 ```
 
 ## Grammar (EBNF)
@@ -36,7 +45,9 @@ factor:
 ```ebnf
 EXPRESSION = TERM, { ("+" | "-"), TERM } ;
 TERM       = FACTOR, { ("*" | "/"), FACTOR } ;
-FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER ;
+FACTOR     = ("+" | "-"), FACTOR | POWER ;
+POWER      = ATOM, [ "**", FACTOR ] ;
+ATOM       = "(", EXPRESSION, ")" | NUMBER ;
 NUMBER     = DIGIT, { DIGIT } ;
 DIGIT      = 0 | 1 | ... | 9 ;
 ```

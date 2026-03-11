@@ -14,6 +14,7 @@ const (
 	MINUS     = "MINUS"
 	MULT      = "MULT"
 	DIV       = "DIV"
+	POW       = "POW"
 	OPEN_PAR  = "OPEN_PAR"
 	CLOSE_PAR = "CLOSE_PAR"
 	EOF       = "EOF"
@@ -64,32 +65,43 @@ func (l *Lexer) selectNext() {
 	switch ch {
 	case '+':
 		l.Next = Token{Type: PLUS, Value: "+"}
+		l.position++
 	case '-':
 		l.Next = Token{Type: MINUS, Value: "-"}
+		l.position++
 	case '*':
-		l.Next = Token{Type: MULT, Value: "*"}
+		if l.position+1 < len(l.source) && l.source[l.position+1] == '*' {
+			l.Next = Token{Type: POW, Value: "**"}
+			l.position += 2
+		} else {
+			l.Next = Token{Type: MULT, Value: "*"}
+			l.position++
+		}
 	case '/':
 		l.Next = Token{Type: DIV, Value: "/"}
+		l.position++
 	case '(':
 		l.Next = Token{Type: OPEN_PAR, Value: "("}
+		l.position++
 	case ')':
 		l.Next = Token{Type: CLOSE_PAR, Value: ")"}
+		l.position++
 	default:
 		panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
 	}
-	l.position++
 }
 
-// parseFactor parses: ("+" | "-") FACTOR | "(" EXPRESSION ")" | NUMBER
-func parseFactor(l *Lexer) int {
-	if l.Next.Type == PLUS {
-		l.selectNext()
-		return +parseFactor(l)
+func intPow(base, exp int) int {
+	result := 1
+	for exp > 0 {
+		result *= base
+		exp--
 	}
-	if l.Next.Type == MINUS {
-		l.selectNext()
-		return -parseFactor(l)
-	}
+	return result
+}
+
+// parseAtom parses: "(" EXPRESSION ")" | NUMBER
+func parseAtom(l *Lexer) int {
 	if l.Next.Type == OPEN_PAR {
 		l.selectNext()
 		result := parseExpression(l)
@@ -105,6 +117,30 @@ func parseFactor(l *Lexer) int {
 		return val
 	}
 	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
+}
+
+// parsePower parses: ATOM [ "**" FACTOR ]  (right-associative)
+func parsePower(l *Lexer) int {
+	base := parseAtom(l)
+	if l.Next.Type == POW {
+		l.selectNext()
+		exp := parseFactor(l)
+		return intPow(base, exp)
+	}
+	return base
+}
+
+// parseFactor parses: ("+" | "-") FACTOR | POWER
+func parseFactor(l *Lexer) int {
+	if l.Next.Type == PLUS {
+		l.selectNext()
+		return +parseFactor(l)
+	}
+	if l.Next.Type == MINUS {
+		l.selectNext()
+		return -parseFactor(l)
+	}
+	return parsePower(l)
 }
 
 // parseTerm parses: FACTOR { ("*" | "/") FACTOR }
