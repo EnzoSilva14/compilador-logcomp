@@ -155,6 +155,9 @@ func (n *BinOp) Evaluate() int {
 	case "*":
 		return left * right
 	case "/":
+		if right == 0 {
+			panic("[Semantic] Division by zero")
+		}
 		return left / right
 	case "**":
 		result := 1
