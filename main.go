@@ -15,6 +15,7 @@ const (
 	MULT      = "MULT"
 	DIV       = "DIV"
 	POW       = "POW"
+	FACT      = "FACT"
 	OPEN_PAR  = "OPEN_PAR"
 	CLOSE_PAR = "CLOSE_PAR"
 	EOF       = "EOF"
@@ -86,6 +87,9 @@ func (l *Lexer) selectNext() {
 	case ')':
 		l.Next = Token{Type: CLOSE_PAR, Value: ")"}
 		l.position++
+	case '!':
+		l.Next = Token{Type: FACT, Value: "!"}
+		l.position++
 	default:
 		panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
 	}
@@ -108,7 +112,7 @@ func (n *IntVal) Evaluate() int {
 	return n.value
 }
 
-// UnOp represents a unary operation: "+" or "-"
+// UnOp represents a unary operation: "+", "-", or "!" (postfix factorial)
 type UnOp struct {
 	value    string // operator symbol
 	children []Node // exactly 1 child (the operand)
@@ -121,6 +125,15 @@ func (n *UnOp) Evaluate() int {
 		return val
 	case "-":
 		return -val
+	case "!":
+		if val < 0 {
+			panic(fmt.Sprintf("[Semantic] Factorial of negative number: %d", val))
+		}
+		result := 1
+		for i := 2; i <= val; i++ {
+			result *= i
+		}
+		return result
 	}
 	panic(fmt.Sprintf("[Semantic] Unknown unary operator: %s", n.value))
 }
@@ -174,9 +187,14 @@ func parseAtom(l *Lexer) Node {
 	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
 }
 
-// parsePower parses: ATOM [ "**" FACTOR ]  (** is right-associative)
+// parsePower parses: ATOM { "!" } [ "**" FACTOR ]  (** is right-associative)
+// Postfix "!" binds tighter than "**", so -3! means -(3!)
 func parsePower(l *Lexer) Node {
 	base := parseAtom(l)
+	for l.Next.Type == FACT {
+		l.selectNext()
+		base = &UnOp{value: "!", children: []Node{base}}
+	}
 	if l.Next.Type == POW {
 		l.selectNext()
 		exp := parseFactor(l)
