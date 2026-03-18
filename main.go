@@ -91,17 +91,72 @@ func (l *Lexer) selectNext() {
 	}
 }
 
-func intPow(base, exp int) int {
-	result := 1
-	for exp > 0 {
-		result *= base
-		exp--
-	}
-	return result
+// ── AST ──────────────────────────────────────────────────────────────────────
+
+// Node is the base interface for all AST nodes
+type Node interface {
+	Evaluate() int
 }
 
+// IntVal is a leaf node representing an integer literal
+type IntVal struct {
+	value    int
+	children []Node // always empty
+}
+
+func (n *IntVal) Evaluate() int {
+	return n.value
+}
+
+// UnOp represents a unary operation: "+" or "-"
+type UnOp struct {
+	value    string // operator symbol
+	children []Node // exactly 1 child (the operand)
+}
+
+func (n *UnOp) Evaluate() int {
+	val := n.children[0].Evaluate()
+	switch n.value {
+	case "+":
+		return val
+	case "-":
+		return -val
+	}
+	panic(fmt.Sprintf("[Semantic] Unknown unary operator: %s", n.value))
+}
+
+// BinOp represents a binary operation: "+", "-", "*", "/", "**"
+type BinOp struct {
+	value    string // operator symbol
+	children []Node // exactly 2 children: [left, right]
+}
+
+func (n *BinOp) Evaluate() int {
+	left := n.children[0].Evaluate()
+	right := n.children[1].Evaluate()
+	switch n.value {
+	case "+":
+		return left + right
+	case "-":
+		return left - right
+	case "*":
+		return left * right
+	case "/":
+		return left / right
+	case "**":
+		result := 1
+		for i := 0; i < right; i++ {
+			result *= left
+		}
+		return result
+	}
+	panic(fmt.Sprintf("[Semantic] Unknown binary operator: %s", n.value))
+}
+
+// ── Parser ───────────────────────────────────────────────────────────────────
+
 // parseAtom parses: "(" EXPRESSION ")" | NUMBER
-func parseAtom(l *Lexer) int {
+func parseAtom(l *Lexer) Node {
 	if l.Next.Type == OPEN_PAR {
 		l.selectNext()
 		result := parseExpression(l)
@@ -114,80 +169,70 @@ func parseAtom(l *Lexer) int {
 	if l.Next.Type == INT {
 		val, _ := strconv.Atoi(l.Next.Value)
 		l.selectNext()
-		return val
+		return &IntVal{value: val}
 	}
 	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
 }
 
-// parsePower parses: ATOM [ "**" FACTOR ]  (right-associative)
-func parsePower(l *Lexer) int {
+// parsePower parses: ATOM [ "**" FACTOR ]  (** is right-associative)
+func parsePower(l *Lexer) Node {
 	base := parseAtom(l)
 	if l.Next.Type == POW {
 		l.selectNext()
 		exp := parseFactor(l)
-		return intPow(base, exp)
+		return &BinOp{value: "**", children: []Node{base, exp}}
 	}
 	return base
 }
 
 // parseFactor parses: ("+" | "-") FACTOR | POWER
-func parseFactor(l *Lexer) int {
+func parseFactor(l *Lexer) Node {
 	if l.Next.Type == PLUS {
 		l.selectNext()
-		return +parseFactor(l)
+		return &UnOp{value: "+", children: []Node{parseFactor(l)}}
 	}
 	if l.Next.Type == MINUS {
 		l.selectNext()
-		return -parseFactor(l)
+		return &UnOp{value: "-", children: []Node{parseFactor(l)}}
 	}
 	return parsePower(l)
 }
 
 // parseTerm parses: FACTOR { ("*" | "/") FACTOR }
-func parseTerm(l *Lexer) int {
+func parseTerm(l *Lexer) Node {
 	result := parseFactor(l)
 	for l.Next.Type == MULT || l.Next.Type == DIV {
-		op := l.Next.Type
+		op := l.Next.Value
 		l.selectNext()
-		val := parseFactor(l)
-		if op == MULT {
-			result *= val
-		} else {
-			result /= val
-		}
+		result = &BinOp{value: op, children: []Node{result, parseFactor(l)}}
 	}
 	return result
 }
 
 // parseExpression parses: TERM { ("+" | "-") TERM }
-func parseExpression(l *Lexer) int {
+func parseExpression(l *Lexer) Node {
 	result := parseTerm(l)
 	for l.Next.Type == PLUS || l.Next.Type == MINUS {
-		op := l.Next.Type
+		op := l.Next.Value
 		l.selectNext()
-		val := parseTerm(l)
-		if op == PLUS {
-			result += val
-		} else {
-			result -= val
-		}
+		result = &BinOp{value: op, children: []Node{result, parseTerm(l)}}
 	}
 	return result
 }
 
-// run creates a Lexer, parses the full expression, and verifies EOF
-func run(source string) int {
+// run creates a Lexer, parses the full expression, and returns the AST root
+func run(source string) Node {
 	l := NewLexer(source)
-	result := parseExpression(l)
+	root := parseExpression(l)
 	if l.Next.Type != EOF {
 		panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
 	}
-	return result
+	return root
 }
 
 func main() {
 	if len(os.Args) < 2 {
 		panic("[Main] Nenhum argumento fornecido. Uso: go run main.go 'expressao'")
 	}
-	fmt.Println(run(os.Args[1]))
+	fmt.Println(run(os.Args[1]).Evaluate())
 }
