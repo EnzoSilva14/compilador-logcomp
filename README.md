@@ -4,7 +4,7 @@
 
 This repository is monitored by Compiler Tester for automatic compilation status.
 
-## Syntax Diagram (v1.1)
+## Syntax Diagram (v1.2)
 
 ```
 expression:
@@ -27,16 +27,7 @@ factor:
 
 ──►─┬─ ['+'] ─┬─ [FACTOR] ──────────────────────►
     ├─ ['-'] ─┘
-    └─ [POWER] ───────────────────────────────────►
-
-power:
-
-──► [ATOM] ─┬──────────────────────────────────►
-            └─ ['**'] ── [FACTOR] ──────────────►
-
-atom:
-
-──►─┬─ '(' ── [EXPRESSION] ── ')' ─────────────►
+    ├─ '(' ── [EXPRESSION] ── ')' ───────────────►
     └─ [NUMBER] ────────────────────────────────►
 ```
 
@@ -45,9 +36,7 @@ atom:
 ```ebnf
 EXPRESSION = TERM, { ("+" | "-"), TERM } ;
 TERM       = FACTOR, { ("*" | "/"), FACTOR } ;
-FACTOR     = ("+" | "-"), FACTOR | POWER ;
-POWER      = ATOM, [ "**", FACTOR ] ;
-ATOM       = "(", EXPRESSION, ")" | NUMBER ;
+FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER ;
 NUMBER     = DIGIT, { DIGIT } ;
 DIGIT      = 0 | 1 | ... | 9 ;
 ```
