@@ -4,15 +4,25 @@
 
 This repository is monitored by Compiler Tester for automatic compilation status.
 
-## Syntax Diagram (v1.2)
+## Syntax Diagram (v2.0)
 
 ```
+program:
+
+──► { STATEMENT } ──► EOF
+
+statement:
+
+──►─┬─ [IDENTIFIER] ── '=' ── [EXPRESSION] ── '\n' ──►
+    ├─ 'print' ── '(' ── [EXPRESSION] ── ')' ── '\n' ──►
+    └─ '\n' ──────────────────────────────────────────►
+
 expression:
 
             ┌────────────────────────────────┐
             │                                │
             ▼                                │
-──► [TERM] ─┴─┬─ ['+'] ─┬─ [TERM] ──────────┘──► EOF
+──► [TERM] ─┴─┬─ ['+'] ─┬─ [TERM] ──────────┘
               └─ ['-'] ─┘
 
 term:
@@ -28,15 +38,19 @@ factor:
 ──►─┬─ ['+'] ─┬─ [FACTOR] ──────────────────────►
     ├─ ['-'] ─┘
     ├─ '(' ── [EXPRESSION] ── ')' ───────────────►
-    └─ [NUMBER] ────────────────────────────────►
+    ├─ [NUMBER] ────────────────────────────────►
+    └─ [IDENTIFIER] ────────────────────────────►
 ```
 
 ## Grammar (EBNF)
 
 ```ebnf
+PROGRAM    = { STATEMENT } ;
+STATEMENT  = ( IDENTIFIER, "=", EXPRESSION | "print", "(", EXPRESSION, ")" | ε ), "\n" ;
 EXPRESSION = TERM, { ("+" | "-"), TERM } ;
 TERM       = FACTOR, { ("*" | "/"), FACTOR } ;
-FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER ;
+FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER | IDENTIFIER ;
 NUMBER     = DIGIT, { DIGIT } ;
-DIGIT      = 0 | 1 | ... | 9 ;
+IDENTIFIER = LETTER, { LETTER | DIGIT | "_" } ;
+DIGIT      = "0" | "1" | ... | "9" ;
 ```

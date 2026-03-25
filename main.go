@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"unicode"
 )
 
@@ -15,9 +16,12 @@ const (
 	MULT      = "MULT"
 	DIV       = "DIV"
 	POW       = "POW"
-	FACT      = "FACT"
 	OPEN_PAR  = "OPEN_PAR"
 	CLOSE_PAR = "CLOSE_PAR"
+	ASSIGN    = "ASSIGN"
+	END       = "END"
+	PRINT     = "PRINT"
+	IDEN      = "IDEN"
 	EOF       = "EOF"
 )
 
@@ -27,23 +31,23 @@ type Token struct {
 	Value string
 }
 
-// Lexer tokenizes the input string on demand
+// ── Lexer ─────────────────────────────────────────────────────────────────────
+
 type Lexer struct {
 	source   string
 	position int
 	Next     Token
 }
 
-// NewLexer creates a Lexer and reads the first token
 func NewLexer(source string) *Lexer {
 	l := &Lexer{source: source, position: 0}
 	l.selectNext()
 	return l
 }
 
-// selectNext advances the Lexer to the next token, storing it in Next
 func (l *Lexer) selectNext() {
-	for l.position < len(l.source) && unicode.IsSpace(rune(l.source[l.position])) {
+	// Skip spaces and tabs but NOT newlines
+	for l.position < len(l.source) && (l.source[l.position] == ' ' || l.source[l.position] == '\t' || l.source[l.position] == '\r') {
 		l.position++
 	}
 
@@ -60,6 +64,21 @@ func (l *Lexer) selectNext() {
 			l.position++
 		}
 		l.Next = Token{Type: INT, Value: l.source[start:l.position]}
+		return
+	}
+
+	if unicode.IsLetter(ch) {
+		start := l.position
+		for l.position < len(l.source) && (unicode.IsLetter(rune(l.source[l.position])) || unicode.IsDigit(rune(l.source[l.position])) || l.source[l.position] == '_') {
+			l.position++
+		}
+		word := l.source[start:l.position]
+		switch word {
+		case "print":
+			l.Next = Token{Type: PRINT, Value: word}
+		default:
+			l.Next = Token{Type: IDEN, Value: word}
+		}
 		return
 	}
 
@@ -87,66 +106,97 @@ func (l *Lexer) selectNext() {
 	case ')':
 		l.Next = Token{Type: CLOSE_PAR, Value: ")"}
 		l.position++
-	case '!':
-		l.Next = Token{Type: FACT, Value: "!"}
+	case '=':
+		l.Next = Token{Type: ASSIGN, Value: "="}
+		l.position++
+	case '\n':
+		l.Next = Token{Type: END, Value: "\n"}
 		l.position++
 	default:
 		panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
 	}
 }
 
-// ── AST ──────────────────────────────────────────────────────────────────────
+// ── PrePro ────────────────────────────────────────────────────────────────────
+
+// PrePro is a preprocessor that removes inline comments before lexing
+type PrePro struct{}
+
+// Filter removes "--" comments from each line, preserving newlines
+func (p PrePro) Filter(code string) string {
+	lines := strings.Split(code, "\n")
+	for i, line := range lines {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			lines[i] = line[:idx]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ── Symbol Table ──────────────────────────────────────────────────────────────
+
+// SymbolTable stores variable bindings for the program
+type SymbolTable struct {
+	table map[string]int
+}
+
+func NewSymbolTable() *SymbolTable {
+	return &SymbolTable{table: make(map[string]int)}
+}
+
+func (st *SymbolTable) Get(name string) int {
+	val, ok := st.table[name]
+	if !ok {
+		panic(fmt.Sprintf("[Semantic] Undefined variable: %s", name))
+	}
+	return val
+}
+
+func (st *SymbolTable) Set(name string, val int) {
+	st.table[name] = val
+}
+
+// ── AST ───────────────────────────────────────────────────────────────────────
 
 // Node is the base interface for all AST nodes
 type Node interface {
-	Evaluate() int
+	Evaluate(st *SymbolTable) int
 }
 
 // IntVal is a leaf node representing an integer literal
 type IntVal struct {
 	value    int
-	children []Node // always empty
+	children []Node
 }
 
-func (n *IntVal) Evaluate() int {
-	return n.value
-}
+func (n *IntVal) Evaluate(st *SymbolTable) int { return n.value }
 
-// UnOp represents a unary operation: "+", "-", or "!" (postfix factorial)
+// UnOp represents a unary operation: "+" or "-"
 type UnOp struct {
-	value    string // operator symbol
-	children []Node // exactly 1 child (the operand)
+	value    string
+	children []Node // 1 child
 }
 
-func (n *UnOp) Evaluate() int {
-	val := n.children[0].Evaluate()
+func (n *UnOp) Evaluate(st *SymbolTable) int {
+	val := n.children[0].Evaluate(st)
 	switch n.value {
 	case "+":
 		return val
 	case "-":
 		return -val
-	case "!":
-		if val < 0 {
-			panic(fmt.Sprintf("[Semantic] Factorial of negative number: %d", val))
-		}
-		result := 1
-		for i := 2; i <= val; i++ {
-			result *= i
-		}
-		return result
 	}
 	panic(fmt.Sprintf("[Semantic] Unknown unary operator: %s", n.value))
 }
 
 // BinOp represents a binary operation: "+", "-", "*", "/", "**"
 type BinOp struct {
-	value    string // operator symbol
-	children []Node // exactly 2 children: [left, right]
+	value    string
+	children []Node // 2 children: [left, right]
 }
 
-func (n *BinOp) Evaluate() int {
-	left := n.children[0].Evaluate()
-	right := n.children[1].Evaluate()
+func (n *BinOp) Evaluate(st *SymbolTable) int {
+	left := n.children[0].Evaluate(st)
+	right := n.children[1].Evaluate(st)
 	switch n.value {
 	case "+":
 		return left + right
@@ -169,7 +219,60 @@ func (n *BinOp) Evaluate() int {
 	panic(fmt.Sprintf("[Semantic] Unknown binary operator: %s", n.value))
 }
 
-// ── Parser ───────────────────────────────────────────────────────────────────
+// Identifier is a leaf node representing a variable reference
+type Identifier struct {
+	value    string // variable name
+	children []Node
+}
+
+func (n *Identifier) Evaluate(st *SymbolTable) int { return st.Get(n.value) }
+
+// Assignment stores a value into the SymbolTable
+type Assignment struct {
+	value    string
+	children []Node // [Identifier, Expression]
+}
+
+func (n *Assignment) Evaluate(st *SymbolTable) int {
+	name := n.children[0].(*Identifier).value
+	val := n.children[1].Evaluate(st)
+	st.Set(name, val)
+	return 0
+}
+
+// Print evaluates its child and prints the result
+type Print struct {
+	value    string
+	children []Node // 1 child
+}
+
+func (n *Print) Evaluate(st *SymbolTable) int {
+	fmt.Println(n.children[0].Evaluate(st))
+	return 0
+}
+
+// Block holds a sequence of statements and evaluates them all
+type Block struct {
+	value    string
+	children []Node
+}
+
+func (n *Block) Evaluate(st *SymbolTable) int {
+	for _, child := range n.children {
+		child.Evaluate(st)
+	}
+	return 0
+}
+
+// NoOp is a dummy node for empty lines
+type NoOp struct {
+	value    string
+	children []Node
+}
+
+func (n *NoOp) Evaluate(st *SymbolTable) int { return 0 }
+
+// ── Parser ────────────────────────────────────────────────────────────────────
 
 // parseAtom parses: "(" EXPRESSION ")" | NUMBER
 func parseAtom(l *Lexer) Node {
@@ -190,14 +293,9 @@ func parseAtom(l *Lexer) Node {
 	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
 }
 
-// parsePower parses: ATOM { "!" } [ "**" FACTOR ]  (** is right-associative)
-// Postfix "!" binds tighter than "**", so -3! means -(3!)
+// parsePower parses: ATOM [ "**" FACTOR ]  (right-associative)
 func parsePower(l *Lexer) Node {
 	base := parseAtom(l)
-	for l.Next.Type == FACT {
-		l.selectNext()
-		base = &UnOp{value: "!", children: []Node{base}}
-	}
 	if l.Next.Type == POW {
 		l.selectNext()
 		exp := parseFactor(l)
@@ -206,7 +304,7 @@ func parsePower(l *Lexer) Node {
 	return base
 }
 
-// parseFactor parses: ("+" | "-") FACTOR | POWER
+// parseFactor parses: ("+" | "-") FACTOR | IDENTIFIER | POWER
 func parseFactor(l *Lexer) Node {
 	if l.Next.Type == PLUS {
 		l.selectNext()
@@ -215,6 +313,11 @@ func parseFactor(l *Lexer) Node {
 	if l.Next.Type == MINUS {
 		l.selectNext()
 		return &UnOp{value: "-", children: []Node{parseFactor(l)}}
+	}
+	if l.Next.Type == IDEN {
+		name := l.Next.Value
+		l.selectNext()
+		return &Identifier{value: name}
 	}
 	return parsePower(l)
 }
@@ -241,19 +344,71 @@ func parseExpression(l *Lexer) Node {
 	return result
 }
 
-// run creates a Lexer, parses the full expression, and returns the AST root
+// parseStatement parses: (IDEN "=" EXPRESSION | "print" "(" EXPRESSION ")" | ε) "\n"
+func parseStatement(l *Lexer) Node {
+	if l.Next.Type == IDEN {
+		name := l.Next.Value
+		l.selectNext()
+		if l.Next.Type != ASSIGN {
+			panic(fmt.Sprintf("[Parser] Expected '=' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		expr := parseExpression(l)
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &Assignment{children: []Node{&Identifier{value: name}, expr}}
+	}
+	if l.Next.Type == PRINT {
+		l.selectNext()
+		if l.Next.Type != OPEN_PAR {
+			panic(fmt.Sprintf("[Parser] Expected '(' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		expr := parseExpression(l)
+		if l.Next.Type != CLOSE_PAR {
+			panic(fmt.Sprintf("[Parser] Expected ')' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &Print{children: []Node{expr}}
+	}
+	if l.Next.Type == END {
+		l.selectNext()
+		return &NoOp{}
+	}
+	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
+}
+
+// parseProgram parses: { STATEMENT }
+func parseProgram(l *Lexer) Node {
+	var children []Node
+	for l.Next.Type != EOF {
+		children = append(children, parseStatement(l))
+	}
+	return &Block{children: children}
+}
+
+// run creates a Lexer and returns the AST root
 func run(source string) Node {
 	l := NewLexer(source)
-	root := parseExpression(l)
-	if l.Next.Type != EOF {
-		panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
-	}
-	return root
+	return parseProgram(l)
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		panic("[Main] Nenhum argumento fornecido. Uso: go run main.go 'expressao'")
+		panic("[Main] Nenhum argumento fornecido. Uso: go run main.go arquivo.lua")
 	}
-	fmt.Println(run(os.Args[1]).Evaluate())
+	data, err := os.ReadFile(os.Args[1])
+	if err != nil {
+		panic(fmt.Sprintf("[Main] Erro ao ler arquivo: %v", err))
+	}
+	source := string(data) + "\n"
+	source = PrePro{}.Filter(source)
+	st := NewSymbolTable()
+	run(source).Evaluate(st)
 }
