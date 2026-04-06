@@ -137,7 +137,7 @@ func (p PrePro) Filter(code string) string {
 	}
 
 	// Step 2: extract "const NAME = NUMBER" declarations and remove those lines
-	constPattern := regexp.MustCompile(`^\s*const\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*(\d+)\s*$`)
+	constPattern := regexp.MustCompile(`^\s*const\s+([A-Za-z][A-Za-z0-9_]*)\s+(\d+)\s*$`)
 	constMap := make(map[string]string)
 	var remaining []string
 	for _, line := range lines {
