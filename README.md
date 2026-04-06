@@ -46,11 +46,12 @@ factor:
 
 ```ebnf
 PROGRAM    = { STATEMENT } ;
-STATEMENT  = ( IDENTIFIER, "=", EXPRESSION | "print", "(", EXPRESSION, ")" | ε ), "\n" ;
+STATEMENT  = ( (IDENTIFIER, "=", EXPRESSION) | (PRINT, "(", EXPRESSION, ")") | Ε ), EOL ;
 EXPRESSION = TERM, { ("+" | "-"), TERM } ;
 TERM       = FACTOR, { ("*" | "/"), FACTOR } ;
-FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER | IDENTIFIER ;
+FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER ;
 NUMBER     = DIGIT, { DIGIT } ;
 IDENTIFIER = LETTER, { LETTER | DIGIT | "_" } ;
-DIGIT      = "0" | "1" | ... | "9" ;
+DIGIT      = 0 | 1 | ... | 9 ;
+LETTER     = a | b | ... | z | A | B | ... | Z ;
 ```
