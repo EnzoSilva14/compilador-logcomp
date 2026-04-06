@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -21,6 +22,7 @@ const (
 	ASSIGN    = "ASSIGN"
 	END       = "END"
 	PRINT     = "PRINT"
+	IMUT      = "IMUT"
 	IDEN      = "IDEN"
 	EOF       = "EOF"
 )
@@ -76,6 +78,8 @@ func (l *Lexer) selectNext() {
 		switch word {
 		case "print":
 			l.Next = Token{Type: PRINT, Value: word}
+		case "imut":
+			l.Next = Token{Type: IMUT, Value: word}
 		default:
 			l.Next = Token{Type: IDEN, Value: word}
 		}
@@ -122,38 +126,72 @@ func (l *Lexer) selectNext() {
 // PrePro is a preprocessor that removes inline comments before lexing
 type PrePro struct{}
 
-// Filter removes "--" comments from each line, preserving newlines
+// Filter removes "--" comments, resolves "const" declarations via text substitution
 func (p PrePro) Filter(code string) string {
+	// Step 1: strip comments
 	lines := strings.Split(code, "\n")
 	for i, line := range lines {
 		if idx := strings.Index(line, "--"); idx >= 0 {
 			lines[i] = line[:idx]
 		}
 	}
-	return strings.Join(lines, "\n")
+
+	// Step 2: extract "const NAME = NUMBER" declarations and remove those lines
+	constPattern := regexp.MustCompile(`^\s*const\s+([A-Za-z][A-Za-z0-9_]*)\s*=\s*(\d+)\s*$`)
+	constMap := make(map[string]string)
+	var remaining []string
+	for _, line := range lines {
+		if m := constPattern.FindStringSubmatch(line); m != nil {
+			constMap[m[1]] = m[2]
+		} else {
+			remaining = append(remaining, line)
+		}
+	}
+
+	// Step 3: substitute constant names with their values (whole-word replacement)
+	code = strings.Join(remaining, "\n")
+	for name, val := range constMap {
+		re := regexp.MustCompile(`\b` + name + `\b`)
+		code = re.ReplaceAllString(code, val)
+	}
+
+	return code
 }
 
 // ── Symbol Table ──────────────────────────────────────────────────────────────
 
+// variable holds a value and an immutability flag
+type variable struct {
+	value int
+	immut bool
+}
+
 // SymbolTable stores variable bindings for the program
 type SymbolTable struct {
-	table map[string]int
+	table map[string]variable
 }
 
 func NewSymbolTable() *SymbolTable {
-	return &SymbolTable{table: make(map[string]int)}
+	return &SymbolTable{table: make(map[string]variable)}
 }
 
 func (st *SymbolTable) Get(name string) int {
-	val, ok := st.table[name]
+	v, ok := st.table[name]
 	if !ok {
 		panic(fmt.Sprintf("[Semantic] Undefined variable: %s", name))
 	}
-	return val
+	return v.value
 }
 
 func (st *SymbolTable) Set(name string, val int) {
-	st.table[name] = val
+	if v, ok := st.table[name]; ok && v.immut {
+		panic(fmt.Sprintf("[Semantic] cannot change the value of %s", name))
+	}
+	st.table[name] = variable{value: val, immut: false}
+}
+
+func (st *SymbolTable) SetImut(name string, val int) {
+	st.table[name] = variable{value: val, immut: true}
 }
 
 // ── AST ───────────────────────────────────────────────────────────────────────
@@ -237,6 +275,19 @@ func (n *Assignment) Evaluate(st *SymbolTable) int {
 	name := n.children[0].(*Identifier).value
 	val := n.children[1].Evaluate(st)
 	st.Set(name, val)
+	return 0
+}
+
+// ImutAssignment stores a value into the SymbolTable as immutable
+type ImutAssignment struct {
+	value    string
+	children []Node // [Identifier, Expression]
+}
+
+func (n *ImutAssignment) Evaluate(st *SymbolTable) int {
+	name := n.children[0].(*Identifier).value
+	val := n.children[1].Evaluate(st)
+	st.SetImut(name, val)
 	return 0
 }
 
@@ -344,8 +395,26 @@ func parseExpression(l *Lexer) Node {
 	return result
 }
 
-// parseStatement parses: (IDEN "=" EXPRESSION | "print" "(" EXPRESSION ")" | ε) "\n"
+// parseStatement parses: (IDEN "=" EXPRESSION | "imut" IDEN "=" EXPRESSION | "print" "(" EXPRESSION ")" | ε) "\n"
 func parseStatement(l *Lexer) Node {
+	if l.Next.Type == IMUT {
+		l.selectNext()
+		if l.Next.Type != IDEN {
+			panic(fmt.Sprintf("[Parser] Expected identifier after 'imut' but got %s", l.Next.Type))
+		}
+		name := l.Next.Value
+		l.selectNext()
+		if l.Next.Type != ASSIGN {
+			panic(fmt.Sprintf("[Parser] Expected '=' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		expr := parseExpression(l)
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &ImutAssignment{children: []Node{&Identifier{value: name}, expr}}
+	}
 	if l.Next.Type == IDEN {
 		name := l.Next.Value
 		l.selectNext()
