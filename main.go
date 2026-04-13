@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"regexp"
@@ -20,11 +21,26 @@ const (
 	OPEN_PAR  = "OPEN_PAR"
 	CLOSE_PAR = "CLOSE_PAR"
 	ASSIGN    = "ASSIGN"
-	END       = "END"
+	END       = "END"    // newline token
+	KW_END    = "KW_END" // "end" keyword
 	PRINT     = "PRINT"
 	IMUT      = "IMUT"
 	IDEN      = "IDEN"
 	EOF       = "EOF"
+	// Boolean / relational operators
+	AND = "AND"
+	OR  = "OR"
+	NOT = "NOT"
+	EQ  = "EQ" // ==
+	GT  = "GT" // >
+	LT  = "LT" // <
+	// Control-flow keywords
+	IF    = "IF"
+	WHILE = "WHILE"
+	ELSE  = "ELSE"
+	READ  = "READ"
+	THEN  = "THEN"
+	DO    = "DO"
 )
 
 // Token holds the type and value of a lexical token
@@ -80,6 +96,26 @@ func (l *Lexer) selectNext() {
 			l.Next = Token{Type: PRINT, Value: word}
 		case "imut":
 			l.Next = Token{Type: IMUT, Value: word}
+		case "and":
+			l.Next = Token{Type: AND, Value: word}
+		case "or":
+			l.Next = Token{Type: OR, Value: word}
+		case "not":
+			l.Next = Token{Type: NOT, Value: word}
+		case "if":
+			l.Next = Token{Type: IF, Value: word}
+		case "while":
+			l.Next = Token{Type: WHILE, Value: word}
+		case "else":
+			l.Next = Token{Type: ELSE, Value: word}
+		case "read":
+			l.Next = Token{Type: READ, Value: word}
+		case "then":
+			l.Next = Token{Type: THEN, Value: word}
+		case "do":
+			l.Next = Token{Type: DO, Value: word}
+		case "end":
+			l.Next = Token{Type: KW_END, Value: word}
 		default:
 			l.Next = Token{Type: IDEN, Value: word}
 		}
@@ -111,7 +147,18 @@ func (l *Lexer) selectNext() {
 		l.Next = Token{Type: CLOSE_PAR, Value: ")"}
 		l.position++
 	case '=':
-		l.Next = Token{Type: ASSIGN, Value: "="}
+		if l.position+1 < len(l.source) && l.source[l.position+1] == '=' {
+			l.Next = Token{Type: EQ, Value: "=="}
+			l.position += 2
+		} else {
+			l.Next = Token{Type: ASSIGN, Value: "="}
+			l.position++
+		}
+	case '>':
+		l.Next = Token{Type: GT, Value: ">"}
+		l.position++
+	case '<':
+		l.Next = Token{Type: LT, Value: "<"}
 		l.position++
 	case '\n':
 		l.Next = Token{Type: END, Value: "\n"}
@@ -209,7 +256,7 @@ type IntVal struct {
 
 func (n *IntVal) Evaluate(st *SymbolTable) int { return n.value }
 
-// UnOp represents a unary operation: "+" or "-"
+// UnOp represents a unary operation: "+", "-", "not"
 type UnOp struct {
 	value    string
 	children []Node // 1 child
@@ -222,11 +269,16 @@ func (n *UnOp) Evaluate(st *SymbolTable) int {
 		return val
 	case "-":
 		return -val
+	case "not":
+		if val == 0 {
+			return 1
+		}
+		return 0
 	}
 	panic(fmt.Sprintf("[Semantic] Unknown unary operator: %s", n.value))
 }
 
-// BinOp represents a binary operation: "+", "-", "*", "/", "**"
+// BinOp represents a binary operation: "+", "-", "*", "/", "**", "==", ">", "<", "and", "or"
 type BinOp struct {
 	value    string
 	children []Node // 2 children: [left, right]
@@ -253,6 +305,31 @@ func (n *BinOp) Evaluate(st *SymbolTable) int {
 			result *= left
 		}
 		return result
+	case "==":
+		if left == right {
+			return 1
+		}
+		return 0
+	case ">":
+		if left > right {
+			return 1
+		}
+		return 0
+	case "<":
+		if left < right {
+			return 1
+		}
+		return 0
+	case "and":
+		if left != 0 && right != 0 {
+			return 1
+		}
+		return 0
+	case "or":
+		if left != 0 || right != 0 {
+			return 1
+		}
+		return 0
 	}
 	panic(fmt.Sprintf("[Semantic] Unknown binary operator: %s", n.value))
 }
@@ -323,9 +400,50 @@ type NoOp struct {
 
 func (n *NoOp) Evaluate(st *SymbolTable) int { return 0 }
 
+// IfNode: children[0]=condition, children[1]=thenBlock, children[2]=elseBlock (optional)
+type IfNode struct {
+	children []Node
+}
+
+func (n *IfNode) Evaluate(st *SymbolTable) int {
+	cond := n.children[0].Evaluate(st)
+	if cond != 0 {
+		n.children[1].Evaluate(st)
+	} else if len(n.children) > 2 {
+		n.children[2].Evaluate(st)
+	}
+	return 0
+}
+
+// WhileNode: children[0]=condition, children[1]=body
+type WhileNode struct {
+	children []Node
+}
+
+func (n *WhileNode) Evaluate(st *SymbolTable) int {
+	for n.children[0].Evaluate(st) != 0 {
+		n.children[1].Evaluate(st)
+	}
+	return 0
+}
+
+// ReadNode reads an integer from stdin and stores it in a variable
+type ReadNode struct {
+	value string // variable name
+}
+
+var stdinReader = bufio.NewReader(os.Stdin)
+
+func (n *ReadNode) Evaluate(st *SymbolTable) int {
+	var val int
+	fmt.Fscan(stdinReader, &val)
+	st.Set(n.value, val)
+	return 0
+}
+
 // ── Parser ────────────────────────────────────────────────────────────────────
 
-// parseAtom parses: "(" EXPRESSION ")" | NUMBER
+// parseAtom parses: "(" EXPRESSION ")" | NUMBER | IDENTIFIER
 func parseAtom(l *Lexer) Node {
 	if l.Next.Type == OPEN_PAR {
 		l.selectNext()
@@ -341,7 +459,12 @@ func parseAtom(l *Lexer) Node {
 		l.selectNext()
 		return &IntVal{value: val}
 	}
-	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
+	if l.Next.Type == IDEN {
+		name := l.Next.Value
+		l.selectNext()
+		return &Identifier{value: name}
+	}
+	panic(fmt.Sprintf("[Parser] Unexpected token %s in atom", l.Next.Type))
 }
 
 // parsePower parses: ATOM [ "**" FACTOR ]  (right-associative)
@@ -355,7 +478,7 @@ func parsePower(l *Lexer) Node {
 	return base
 }
 
-// parseFactor parses: ("+" | "-") FACTOR | IDENTIFIER | POWER
+// parseFactor parses: ("+" | "-") FACTOR | POWER
 func parseFactor(l *Lexer) Node {
 	if l.Next.Type == PLUS {
 		l.selectNext()
@@ -364,11 +487,6 @@ func parseFactor(l *Lexer) Node {
 	if l.Next.Type == MINUS {
 		l.selectNext()
 		return &UnOp{value: "-", children: []Node{parseFactor(l)}}
-	}
-	if l.Next.Type == IDEN {
-		name := l.Next.Value
-		l.selectNext()
-		return &Identifier{value: name}
 	}
 	return parsePower(l)
 }
@@ -395,7 +513,56 @@ func parseExpression(l *Lexer) Node {
 	return result
 }
 
-// parseStatement parses: (IDEN "=" EXPRESSION | "imut" IDEN "=" EXPRESSION | "print" "(" EXPRESSION ")" | ε) "\n"
+// parseRelExpr parses: EXPRESSION { ("==" | ">" | "<") EXPRESSION }
+func parseRelExpr(l *Lexer) Node {
+	result := parseExpression(l)
+	for l.Next.Type == EQ || l.Next.Type == GT || l.Next.Type == LT {
+		op := l.Next.Value
+		l.selectNext()
+		result = &BinOp{value: op, children: []Node{result, parseExpression(l)}}
+	}
+	return result
+}
+
+// parseNotExpr parses: "not" NOTEXPR | RELEXPR
+func parseNotExpr(l *Lexer) Node {
+	if l.Next.Type == NOT {
+		l.selectNext()
+		return &UnOp{value: "not", children: []Node{parseNotExpr(l)}}
+	}
+	return parseRelExpr(l)
+}
+
+// parseBoolTerm parses: NOTEXPR { "and" NOTEXPR }
+func parseBoolTerm(l *Lexer) Node {
+	result := parseNotExpr(l)
+	for l.Next.Type == AND {
+		l.selectNext()
+		result = &BinOp{value: "and", children: []Node{result, parseNotExpr(l)}}
+	}
+	return result
+}
+
+// parseBoolExpr parses: BOOLTERM { "or" BOOLTERM }
+func parseBoolExpr(l *Lexer) Node {
+	result := parseBoolTerm(l)
+	for l.Next.Type == OR {
+		l.selectNext()
+		result = &BinOp{value: "or", children: []Node{result, parseBoolTerm(l)}}
+	}
+	return result
+}
+
+// parseBlock parses statements until "end", "else", or EOF
+func parseBlock(l *Lexer) Node {
+	var children []Node
+	for l.Next.Type != EOF && l.Next.Type != KW_END && l.Next.Type != ELSE {
+		children = append(children, parseStatement(l))
+	}
+	return &Block{children: children}
+}
+
+// parseStatement parses a single statement followed by a newline
 func parseStatement(l *Lexer) Node {
 	if l.Next.Type == IMUT {
 		l.selectNext()
@@ -415,6 +582,7 @@ func parseStatement(l *Lexer) Node {
 		l.selectNext()
 		return &ImutAssignment{children: []Node{&Identifier{value: name}, expr}}
 	}
+
 	if l.Next.Type == IDEN {
 		name := l.Next.Value
 		l.selectNext()
@@ -429,6 +597,7 @@ func parseStatement(l *Lexer) Node {
 		l.selectNext()
 		return &Assignment{children: []Node{&Identifier{value: name}, expr}}
 	}
+
 	if l.Next.Type == PRINT {
 		l.selectNext()
 		if l.Next.Type != OPEN_PAR {
@@ -446,20 +615,96 @@ func parseStatement(l *Lexer) Node {
 		l.selectNext()
 		return &Print{children: []Node{expr}}
 	}
+
+	if l.Next.Type == READ {
+		l.selectNext()
+		if l.Next.Type != OPEN_PAR {
+			panic(fmt.Sprintf("[Parser] Expected '(' after 'read' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != IDEN {
+			panic(fmt.Sprintf("[Parser] Expected identifier in 'read()' but got %s", l.Next.Type))
+		}
+		name := l.Next.Value
+		l.selectNext()
+		if l.Next.Type != CLOSE_PAR {
+			panic(fmt.Sprintf("[Parser] Expected ')' after identifier in 'read()' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &ReadNode{value: name}
+	}
+
+	if l.Next.Type == IF {
+		l.selectNext()
+		cond := parseBoolExpr(l)
+		if l.Next.Type != THEN {
+			panic(fmt.Sprintf("[Parser] Expected 'then' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'then' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		thenBlock := parseBlock(l)
+		children := []Node{cond, thenBlock}
+		if l.Next.Type == ELSE {
+			l.selectNext()
+			if l.Next.Type != END {
+				panic(fmt.Sprintf("[Parser] Expected newline after 'else' but got %s", l.Next.Type))
+			}
+			l.selectNext()
+			elseBlock := parseBlock(l)
+			children = append(children, elseBlock)
+		}
+		if l.Next.Type != KW_END {
+			panic(fmt.Sprintf("[Parser] Expected 'end' to close 'if' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'end' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &IfNode{children: children}
+	}
+
+	if l.Next.Type == WHILE {
+		l.selectNext()
+		cond := parseBoolExpr(l)
+		if l.Next.Type != DO {
+			panic(fmt.Sprintf("[Parser] Expected 'do' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'do' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		body := parseBlock(l)
+		if l.Next.Type != KW_END {
+			panic(fmt.Sprintf("[Parser] Expected 'end' to close 'while' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'end' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &WhileNode{children: []Node{cond, body}}
+	}
+
 	if l.Next.Type == END {
 		l.selectNext()
 		return &NoOp{}
 	}
+
 	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
 }
 
 // parseProgram parses: { STATEMENT }
 func parseProgram(l *Lexer) Node {
-	var children []Node
-	for l.Next.Type != EOF {
-		children = append(children, parseStatement(l))
-	}
-	return &Block{children: children}
+	return parseBlock(l)
 }
 
 // run creates a Lexer and returns the AST root
