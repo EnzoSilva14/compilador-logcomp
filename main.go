@@ -41,6 +41,11 @@ const (
 	READ  = "READ"
 	THEN  = "THEN"
 	DO    = "DO"
+	// Extra credit keywords
+	FOR    = "FOR"
+	REPEAT = "REPEAT"
+	UNTIL  = "UNTIL"
+	COMMA  = "COMMA"
 )
 
 // Token holds the type and value of a lexical token
@@ -116,6 +121,12 @@ func (l *Lexer) selectNext() {
 			l.Next = Token{Type: DO, Value: word}
 		case "end":
 			l.Next = Token{Type: KW_END, Value: word}
+		case "for":
+			l.Next = Token{Type: FOR, Value: word}
+		case "repeat":
+			l.Next = Token{Type: REPEAT, Value: word}
+		case "until":
+			l.Next = Token{Type: UNTIL, Value: word}
 		default:
 			l.Next = Token{Type: IDEN, Value: word}
 		}
@@ -174,6 +185,9 @@ func (l *Lexer) selectNext() {
 		} else {
 			panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
 		}
+	case ',':
+		l.Next = Token{Type: COMMA, Value: ","}
+		l.position++
 	case '\n':
 		l.Next = Token{Type: END, Value: "\n"}
 		l.position++
@@ -441,6 +455,48 @@ func (n *WhileNode) Evaluate(st *SymbolTable) int {
 	return 0
 }
 
+// ForNode: numeric for loop
+// children[0]=Identifier, children[1]=start, children[2]=limit, children[3]=step(opt), children[-1]=body
+type ForNode struct {
+	varName  string
+	children []Node // [start, limit, body] or [start, limit, step, body]
+}
+
+func (n *ForNode) Evaluate(st *SymbolTable) int {
+	start := n.children[0].Evaluate(st)
+	limit := n.children[1].Evaluate(st)
+	step := 1
+	body := n.children[2]
+	if len(n.children) == 4 {
+		step = n.children[2].Evaluate(st)
+		body = n.children[3]
+	}
+	if step == 0 {
+		panic("[Semantic] 'for' step cannot be zero")
+	}
+	for i := start; (step > 0 && i <= limit) || (step < 0 && i >= limit); i += step {
+		st.Set(n.varName, i)
+		body.Evaluate(st)
+	}
+	return 0
+}
+
+// RepeatNode: repeat ... until condition
+// children[0]=body, children[1]=condition
+type RepeatNode struct {
+	children []Node
+}
+
+func (n *RepeatNode) Evaluate(st *SymbolTable) int {
+	for {
+		n.children[0].Evaluate(st)
+		if n.children[1].Evaluate(st) != 0 {
+			break
+		}
+	}
+	return 0
+}
+
 // ReadVal reads an integer from stdin and returns it as an expression value
 type ReadVal struct{}
 
@@ -576,10 +632,10 @@ func parseBoolExpr(l *Lexer) Node {
 	return result
 }
 
-// parseBlock parses statements until "end", "else", or EOF
+// parseBlock parses statements until "end", "else", "until", or EOF
 func parseBlock(l *Lexer) Node {
 	var children []Node
-	for l.Next.Type != EOF && l.Next.Type != KW_END && l.Next.Type != ELSE {
+	for l.Next.Type != EOF && l.Next.Type != KW_END && l.Next.Type != ELSE && l.Next.Type != UNTIL {
 		children = append(children, parseStatement(l))
 	}
 	return &Block{children: children}
@@ -711,6 +767,71 @@ func parseStatement(l *Lexer) Node {
 		}
 		l.selectNext()
 		return &WhileNode{children: []Node{cond, body}}
+	}
+
+	if l.Next.Type == FOR {
+		l.selectNext()
+		if l.Next.Type != IDEN {
+			panic(fmt.Sprintf("[Parser] Expected identifier after 'for' but got %s", l.Next.Type))
+		}
+		varName := l.Next.Value
+		l.selectNext()
+		if l.Next.Type != ASSIGN {
+			panic(fmt.Sprintf("[Parser] Expected '=' in 'for' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		start := parseExpression(l)
+		if l.Next.Type != COMMA {
+			panic(fmt.Sprintf("[Parser] Expected ',' after start in 'for' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		limit := parseExpression(l)
+		var forChildren []Node
+		if l.Next.Type == COMMA {
+			l.selectNext()
+			step := parseExpression(l)
+			forChildren = []Node{start, limit, step}
+		} else {
+			forChildren = []Node{start, limit}
+		}
+		if l.Next.Type != DO {
+			panic(fmt.Sprintf("[Parser] Expected 'do' in 'for' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'do' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		body := parseBlock(l)
+		if l.Next.Type != KW_END {
+			panic(fmt.Sprintf("[Parser] Expected 'end' to close 'for' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'end' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		forChildren = append(forChildren, body)
+		return &ForNode{varName: varName, children: forChildren}
+	}
+
+	if l.Next.Type == REPEAT {
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'repeat' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		body := parseBlock(l)
+		if l.Next.Type != UNTIL {
+			panic(fmt.Sprintf("[Parser] Expected 'until' to close 'repeat' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		cond := parseBoolExpr(l)
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'until' condition but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &RepeatNode{children: []Node{body, cond}}
 	}
 
 	if l.Next.Type == END {
