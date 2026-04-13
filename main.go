@@ -456,10 +456,10 @@ func (n *WhileNode) Evaluate(st *SymbolTable) int {
 }
 
 // ForNode: numeric for loop
-// children[0]=Identifier, children[1]=start, children[2]=limit, children[3]=step(opt), children[-1]=body
+// children: [start, limit, body] or [start, limit, step, body]
 type ForNode struct {
 	varName  string
-	children []Node // [start, limit, body] or [start, limit, step, body]
+	children []Node
 }
 
 func (n *ForNode) Evaluate(st *SymbolTable) int {
@@ -474,11 +474,26 @@ func (n *ForNode) Evaluate(st *SymbolTable) int {
 	if step == 0 {
 		panic("[Semantic] 'for' step cannot be zero")
 	}
-	for i := start; (step > 0 && i <= limit) || (step < 0 && i >= limit); i += step {
+	i := start
+	for ; (step > 0 && i <= limit) || (step < 0 && i >= limit); i += step {
 		st.Set(n.varName, i)
 		body.Evaluate(st)
 	}
+	// leave loop variable at its final (out-of-range) value, like Lua
+	st.Set(n.varName, i)
 	return 0
+}
+
+// IfExpr is a ternary-like inline expression: if COND then EXPR else EXPR end
+type IfExpr struct {
+	children []Node // [condition, thenExpr, elseExpr]
+}
+
+func (n *IfExpr) Evaluate(st *SymbolTable) int {
+	if n.children[0].Evaluate(st) != 0 {
+		return n.children[1].Evaluate(st)
+	}
+	return n.children[2].Evaluate(st)
 }
 
 // RepeatNode: repeat ... until condition
@@ -510,8 +525,27 @@ func (n *ReadVal) Evaluate(st *SymbolTable) int {
 
 // ── Parser ────────────────────────────────────────────────────────────────────
 
-// parseAtom parses: "(" BOOLEXPRESSION ")" | NUMBER | IDENTIFIER
+// parseAtom parses: "(" BOOLEXPRESSION ")" | "if" BOOLEXPR "then" EXPR "else" EXPR "end" | NUMBER | IDENTIFIER
 func parseAtom(l *Lexer) Node {
+	if l.Next.Type == IF {
+		l.selectNext()
+		cond := parseBoolExpr(l)
+		if l.Next.Type != THEN {
+			panic(fmt.Sprintf("[Parser] Expected 'then' in inline if but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		thenExpr := parseBoolExpr(l)
+		if l.Next.Type != ELSE {
+			panic(fmt.Sprintf("[Parser] Expected 'else' in inline if but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		elseExpr := parseBoolExpr(l)
+		if l.Next.Type != KW_END {
+			panic(fmt.Sprintf("[Parser] Expected 'end' to close inline if but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &IfExpr{children: []Node{cond, thenExpr, elseExpr}}
+	}
 	if l.Next.Type == OPEN_PAR {
 		l.selectNext()
 		result := parseBoolExpr(l)
