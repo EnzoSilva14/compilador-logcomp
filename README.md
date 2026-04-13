@@ -9,9 +9,9 @@ This repository is monitored by Compiler Tester for automatic compilation status
 ```ebnf
 PROGRAM        = { STATEMENT } ;
 STATEMENT      = ( (IDENTIFIER, "=", BOOLEXPRESSION) | (IF, "(", BOOLEXPRESSION, ")", STATEMENT, ("ELSE", STATEMENT) | Ε) | (PRINT, "(", BOOLEXPRESSION, ")") | (WHILE, "(", BOOLEXPRESSION, ")", STATEMENT) | Ε ), EOL ;
-BOOLEXPRESSION = BOOLTERM, { "or", BOOLTERM } ;
-BOOLTERM       = RELEXPRESSION, { "and", RELEXPRESSION } ;
-RELEXPRESSION  = EXPRESSION, { ("==" | ">" | "<"), EXPRESSION } ;
+BOOLEXPRESSION = BOOLTERM, { "||", BOOLTERM } ;
+BOOLTERM       = RELEXPRESSION, { "&&", RELEXPRESSION } ;
+RELEXPRESSION  = EXPRESSION, ("<" | "==" | ">"), EXPRESSION ;
 EXPRESSION     = TERM, { ("+" | "-"), TERM } ;
 TERM           = FACTOR, { ("*" | "/"), FACTOR } ;
 FACTOR         = ("+"|"-"), FACTOR | "(", BOOLEXPRESSION, ")" | NUMBER | READ, "(", ")" ;
