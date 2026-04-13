@@ -160,6 +160,20 @@ func (l *Lexer) selectNext() {
 	case '<':
 		l.Next = Token{Type: LT, Value: "<"}
 		l.position++
+	case '|':
+		if l.position+1 < len(l.source) && l.source[l.position+1] == '|' {
+			l.Next = Token{Type: OR, Value: "||"}
+			l.position += 2
+		} else {
+			panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
+		}
+	case '&':
+		if l.position+1 < len(l.source) && l.source[l.position+1] == '&' {
+			l.Next = Token{Type: AND, Value: "&&"}
+			l.position += 2
+		} else {
+			panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
+		}
 	case '\n':
 		l.Next = Token{Type: END, Value: "\n"}
 		l.position++
@@ -427,27 +441,24 @@ func (n *WhileNode) Evaluate(st *SymbolTable) int {
 	return 0
 }
 
-// ReadNode reads an integer from stdin and stores it in a variable
-type ReadNode struct {
-	value string // variable name
-}
+// ReadVal reads an integer from stdin and returns it as an expression value
+type ReadVal struct{}
 
 var stdinReader = bufio.NewReader(os.Stdin)
 
-func (n *ReadNode) Evaluate(st *SymbolTable) int {
+func (n *ReadVal) Evaluate(st *SymbolTable) int {
 	var val int
 	fmt.Fscan(stdinReader, &val)
-	st.Set(n.value, val)
-	return 0
+	return val
 }
 
 // ── Parser ────────────────────────────────────────────────────────────────────
 
-// parseAtom parses: "(" EXPRESSION ")" | NUMBER | IDENTIFIER
+// parseAtom parses: "(" BOOLEXPRESSION ")" | NUMBER | IDENTIFIER
 func parseAtom(l *Lexer) Node {
 	if l.Next.Type == OPEN_PAR {
 		l.selectNext()
-		result := parseExpression(l)
+		result := parseBoolExpr(l)
 		if l.Next.Type != CLOSE_PAR {
 			panic(fmt.Sprintf("[Parser] Expected ')' but got %s", l.Next.Type))
 		}
@@ -478,7 +489,7 @@ func parsePower(l *Lexer) Node {
 	return base
 }
 
-// parseFactor parses: ("+" | "-") FACTOR | POWER
+// parseFactor parses: ("+" | "-") FACTOR | READ "()" | POWER
 func parseFactor(l *Lexer) Node {
 	if l.Next.Type == PLUS {
 		l.selectNext()
@@ -487,6 +498,18 @@ func parseFactor(l *Lexer) Node {
 	if l.Next.Type == MINUS {
 		l.selectNext()
 		return &UnOp{value: "-", children: []Node{parseFactor(l)}}
+	}
+	if l.Next.Type == READ {
+		l.selectNext()
+		if l.Next.Type != OPEN_PAR {
+			panic(fmt.Sprintf("[Parser] Expected '(' after 'read' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != CLOSE_PAR {
+			panic(fmt.Sprintf("[Parser] Expected ')' in 'read()' but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		return &ReadVal{}
 	}
 	return parsePower(l)
 }
@@ -513,10 +536,10 @@ func parseExpression(l *Lexer) Node {
 	return result
 }
 
-// parseRelExpr parses: EXPRESSION { ("==" | ">" | "<") EXPRESSION }
+// parseRelExpr parses: EXPRESSION [ ("==" | ">" | "<") EXPRESSION ]
 func parseRelExpr(l *Lexer) Node {
 	result := parseExpression(l)
-	for l.Next.Type == EQ || l.Next.Type == GT || l.Next.Type == LT {
+	if l.Next.Type == EQ || l.Next.Type == GT || l.Next.Type == LT {
 		op := l.Next.Value
 		l.selectNext()
 		result = &BinOp{value: op, children: []Node{result, parseExpression(l)}}
@@ -575,7 +598,7 @@ func parseStatement(l *Lexer) Node {
 			panic(fmt.Sprintf("[Parser] Expected '=' but got %s", l.Next.Type))
 		}
 		l.selectNext()
-		expr := parseExpression(l)
+		expr := parseBoolExpr(l)
 		if l.Next.Type != END {
 			panic(fmt.Sprintf("[Parser] Expected newline but got %s", l.Next.Type))
 		}
@@ -590,7 +613,7 @@ func parseStatement(l *Lexer) Node {
 			panic(fmt.Sprintf("[Parser] Expected '=' but got %s", l.Next.Type))
 		}
 		l.selectNext()
-		expr := parseExpression(l)
+		expr := parseBoolExpr(l)
 		if l.Next.Type != END {
 			panic(fmt.Sprintf("[Parser] Expected newline but got %s", l.Next.Type))
 		}
@@ -604,7 +627,7 @@ func parseStatement(l *Lexer) Node {
 			panic(fmt.Sprintf("[Parser] Expected '(' but got %s", l.Next.Type))
 		}
 		l.selectNext()
-		expr := parseExpression(l)
+		expr := parseBoolExpr(l)
 		if l.Next.Type != CLOSE_PAR {
 			panic(fmt.Sprintf("[Parser] Expected ')' but got %s", l.Next.Type))
 		}
@@ -616,26 +639,22 @@ func parseStatement(l *Lexer) Node {
 		return &Print{children: []Node{expr}}
 	}
 
-	if l.Next.Type == READ {
+	if l.Next.Type == DO {
 		l.selectNext()
-		if l.Next.Type != OPEN_PAR {
-			panic(fmt.Sprintf("[Parser] Expected '(' after 'read' but got %s", l.Next.Type))
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after 'do' but got %s", l.Next.Type))
 		}
 		l.selectNext()
-		if l.Next.Type != IDEN {
-			panic(fmt.Sprintf("[Parser] Expected identifier in 'read()' but got %s", l.Next.Type))
-		}
-		name := l.Next.Value
-		l.selectNext()
-		if l.Next.Type != CLOSE_PAR {
-			panic(fmt.Sprintf("[Parser] Expected ')' after identifier in 'read()' but got %s", l.Next.Type))
+		block := parseBlock(l)
+		if l.Next.Type != KW_END {
+			panic(fmt.Sprintf("[Parser] Expected 'end' to close 'do' but got %s", l.Next.Type))
 		}
 		l.selectNext()
 		if l.Next.Type != END {
-			panic(fmt.Sprintf("[Parser] Expected newline but got %s", l.Next.Type))
+			panic(fmt.Sprintf("[Parser] Expected newline after 'end' but got %s", l.Next.Type))
 		}
 		l.selectNext()
-		return &ReadNode{value: name}
+		return block
 	}
 
 	if l.Next.Type == IF {
@@ -702,9 +721,13 @@ func parseStatement(l *Lexer) Node {
 	panic(fmt.Sprintf("[Parser] Unexpected token %s", l.Next.Type))
 }
 
-// parseProgram parses: { STATEMENT }
+// parseProgram parses: { STATEMENT } EOF
 func parseProgram(l *Lexer) Node {
-	return parseBlock(l)
+	block := parseBlock(l)
+	if l.Next.Type != EOF {
+		panic(fmt.Sprintf("[Parser] Unexpected token %s (expected EOF)", l.Next.Type))
+	}
+	return block
 }
 
 // run creates a Lexer and returns the AST root
