@@ -4,54 +4,19 @@
 
 This repository is monitored by Compiler Tester for automatic compilation status.
 
-## Syntax Diagram (v2.0)
-
-```
-program:
-
-──► { STATEMENT } ──► EOF
-
-statement:
-
-──►─┬─ [IDENTIFIER] ── '=' ── [EXPRESSION] ── '\n' ──►
-    ├─ 'print' ── '(' ── [EXPRESSION] ── ')' ── '\n' ──►
-    └─ '\n' ──────────────────────────────────────────►
-
-expression:
-
-            ┌────────────────────────────────┐
-            │                                │
-            ▼                                │
-──► [TERM] ─┴─┬─ ['+'] ─┬─ [TERM] ──────────┘
-              └─ ['-'] ─┘
-
-term:
-
-              ┌────────────────────────────────┐
-              │                                │
-              ▼                                │
-──► [FACTOR] ─┴─┬─ ['*'] ─┬─ [FACTOR] ────────┘
-                └─ ['/'] ─┘
-
-factor:
-
-──►─┬─ ['+'] ─┬─ [FACTOR] ──────────────────────►
-    ├─ ['-'] ─┘
-    ├─ '(' ── [EXPRESSION] ── ')' ───────────────►
-    ├─ [NUMBER] ────────────────────────────────►
-    └─ [IDENTIFIER] ────────────────────────────►
-```
-
-## Grammar (EBNF)
+## Grammar (EBNF v2.1)
 
 ```ebnf
-PROGRAM    = { STATEMENT } ;
-STATEMENT  = ( (IDENTIFIER, "=", EXPRESSION) | (PRINT, "(", EXPRESSION, ")") | Ε ), EOL ;
-EXPRESSION = TERM, { ("+" | "-"), TERM } ;
-TERM       = FACTOR, { ("*" | "/"), FACTOR } ;
-FACTOR     = ("+" | "-"), FACTOR | "(", EXPRESSION, ")" | NUMBER ;
-NUMBER     = DIGIT, { DIGIT } ;
-IDENTIFIER = LETTER, { LETTER | DIGIT | "_" } ;
-DIGIT      = 0 | 1 | ... | 9 ;
-LETTER     = a | b | ... | z | A | B | ... | Z ;
+PROGRAM        = { STATEMENT } ;
+STATEMENT      = ( (IDENTIFIER, "=", BOOLEXPRESSION) | (IF, "(", BOOLEXPRESSION, ")", STATEMENT, ("ELSE", STATEMENT) | Ε) | (PRINT, "(", BOOLEXPRESSION, ")") | (WHILE, "(", BOOLEXPRESSION, ")", STATEMENT) | Ε ), EOL ;
+BOOLEXPRESSION = BOOLTERM, { "or", BOOLTERM } ;
+BOOLTERM       = RELEXPRESSION, { "and", RELEXPRESSION } ;
+RELEXPRESSION  = EXPRESSION, { ("==" | ">" | "<"), EXPRESSION } ;
+EXPRESSION     = TERM, { ("+" | "-"), TERM } ;
+TERM           = FACTOR, { ("*" | "/"), FACTOR } ;
+FACTOR         = ("+"|"-"), FACTOR | "(", BOOLEXPRESSION, ")" | NUMBER | READ, "(", ")" ;
+NUMBER         = DIGIT, { DIGIT } ;
+IDENTIFIER     = LETTER, { LETTER | DIGIT | "_" } ;
+DIGIT          = 0 | 1 | ... | 9 ;
+LETTER         = a | b | ... | z | A | B | ... | Z ;
 ```
