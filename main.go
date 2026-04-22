@@ -44,12 +44,13 @@ const (
 	REPEAT = "REPEAT"
 	UNTIL  = "UNTIL"
 	COMMA  = "COMMA"
-	CONCAT = "CONCAT" // ..
+	CONCAT    = "CONCAT"    // ..
+	FLOAT_LIT = "FLOAT_LIT" // float literal
 	// v2.2
 	VAR  = "VAR"  // "local"
 	BOOL = "BOOL" // "true" / "false"
 	STR  = "STR"  // string literal
-	TYPE = "TYPE" // "number" / "string" / "boolean"
+	TYPE = "TYPE" // "number" / "string" / "boolean" / "float"
 )
 
 type Token struct {
@@ -64,6 +65,14 @@ type Lexer struct {
 	position int
 	Next     Token
 }
+
+type LexerState struct {
+	position int
+	next     Token
+}
+
+func (l *Lexer) Save() LexerState    { return LexerState{l.position, l.Next} }
+func (l *Lexer) Restore(s LexerState) { l.position = s.position; l.Next = s.next }
 
 func NewLexer(source string) *Lexer {
 	l := &Lexer{source: source}
@@ -87,7 +96,17 @@ func (l *Lexer) selectNext() {
 		for l.position < len(l.source) && unicode.IsDigit(rune(l.source[l.position])) {
 			l.position++
 		}
-		l.Next = Token{Type: INT, Value: l.source[start:l.position]}
+		// Float: digit '.' digit (but not '..' concat)
+		if l.position < len(l.source) && l.source[l.position] == '.' &&
+			!(l.position+1 < len(l.source) && l.source[l.position+1] == '.') {
+			l.position++ // consume '.'
+			for l.position < len(l.source) && unicode.IsDigit(rune(l.source[l.position])) {
+				l.position++
+			}
+			l.Next = Token{Type: FLOAT_LIT, Value: l.source[start:l.position]}
+		} else {
+			l.Next = Token{Type: INT, Value: l.source[start:l.position]}
+		}
 		return
 	}
 
@@ -135,7 +154,7 @@ func (l *Lexer) selectNext() {
 			l.Next = Token{Type: VAR, Value: word}
 		case "true", "false":
 			l.Next = Token{Type: BOOL, Value: word}
-		case "number", "string", "boolean":
+		case "number", "string", "boolean", "float":
 			l.Next = Token{Type: TYPE, Value: word}
 		default:
 			l.Next = Token{Type: IDEN, Value: word}
@@ -257,15 +276,28 @@ func (p PrePro) Filter(code string) string {
 // ── Variable & SymbolTable ────────────────────────────────────────────────────
 
 type variable struct {
-	intVal  int
-	strVal  string
-	vartype string // "number", "string", "boolean"
-	immut   bool
+	intVal   int
+	floatVal float64
+	strVal   string
+	vartype  string // "number", "float", "string", "boolean"
+	immut    bool
 }
 
-func mkNumber(v int) variable    { return variable{intVal: v, vartype: "number"} }
-func mkString(s string) variable { return variable{strVal: s, vartype: "string"} }
-func mkBool(b int) variable      { return variable{intVal: b, vartype: "boolean"} }
+func mkNumber(v int) variable      { return variable{intVal: v, vartype: "number"} }
+func mkFloat(f float64) variable   { return variable{floatVal: f, vartype: "float"} }
+func mkString(s string) variable   { return variable{strVal: s, vartype: "string"} }
+func mkBool(b int) variable        { return variable{intVal: b, vartype: "boolean"} }
+
+func isNumeric(v variable) bool {
+	return v.vartype == "number" || v.vartype == "float"
+}
+
+func toFloat(v variable) float64 {
+	if v.vartype == "float" {
+		return v.floatVal
+	}
+	return float64(v.intVal)
+}
 
 func defaultFor(vartype string) variable {
 	switch vartype {
@@ -273,6 +305,8 @@ func defaultFor(vartype string) variable {
 		return mkString("")
 	case "boolean":
 		return mkBool(0)
+	case "float":
+		return mkFloat(0.0)
 	default:
 		return mkNumber(0)
 	}
@@ -294,6 +328,8 @@ func valToString(v variable) string {
 			return "true"
 		}
 		return "false"
+	case "float":
+		return strconv.FormatFloat(v.floatVal, 'f', -1, 64)
 	default:
 		return strconv.Itoa(v.intVal)
 	}
@@ -331,7 +367,7 @@ func (st *SymbolTable) Set(name string, val variable) {
 		panic(fmt.Sprintf("[Semantic] Type mismatch: cannot assign %s to %s variable '%s'",
 			val.vartype, existing.vartype, name))
 	}
-	st.table[name] = variable{intVal: val.intVal, strVal: val.strVal, vartype: existing.vartype, immut: false}
+	st.table[name] = variable{intVal: val.intVal, floatVal: val.floatVal, strVal: val.strVal, vartype: existing.vartype, immut: false}
 }
 
 func (st *SymbolTable) SetImut(name string, val variable) {
@@ -359,6 +395,61 @@ type IntVal struct{ value int }
 
 func (n *IntVal) Evaluate(_ *SymbolTable) variable { return mkNumber(n.value) }
 
+// FloatVal
+type FloatVal struct{ value float64 }
+
+func (n *FloatVal) Evaluate(_ *SymbolTable) variable { return mkFloat(n.value) }
+
+// CastNode: (TYPE) EXPR
+type CastNode struct {
+	targetType string
+	children   []Node
+}
+
+func (n *CastNode) Evaluate(st *SymbolTable) variable {
+	val := n.children[0].Evaluate(st)
+	switch n.targetType {
+	case "number":
+		switch val.vartype {
+		case "number":
+			return mkNumber(val.intVal)
+		case "float":
+			return mkNumber(int(val.floatVal))
+		case "boolean":
+			return mkNumber(val.intVal)
+		case "string":
+			i, err := strconv.Atoi(val.strVal)
+			if err != nil {
+				panic(fmt.Sprintf("[Semantic] Cannot cast string '%s' to number", val.strVal))
+			}
+			return mkNumber(i)
+		}
+	case "float":
+		switch val.vartype {
+		case "float":
+			return mkFloat(val.floatVal)
+		case "number":
+			return mkFloat(float64(val.intVal))
+		case "boolean":
+			return mkFloat(float64(val.intVal))
+		case "string":
+			f, err := strconv.ParseFloat(val.strVal, 64)
+			if err != nil {
+				panic(fmt.Sprintf("[Semantic] Cannot cast string '%s' to float", val.strVal))
+			}
+			return mkFloat(f)
+		}
+	case "string":
+		return mkString(valToString(val))
+	case "boolean":
+		if truthy(val) {
+			return mkBool(1)
+		}
+		return mkBool(0)
+	}
+	panic(fmt.Sprintf("[Semantic] Unknown cast target type: %s", n.targetType))
+}
+
 // BoolVal
 type BoolVal struct{ value int } // 1=true, 0=false
 
@@ -384,13 +475,19 @@ func (n *UnOp) Evaluate(st *SymbolTable) variable {
 	val := n.children[0].Evaluate(st)
 	switch n.value {
 	case "+":
-		if val.vartype != "number" {
-			panic("[Semantic] Unary '+' requires number")
+		if !isNumeric(val) {
+			panic("[Semantic] Unary '+' requires number or float")
+		}
+		if val.vartype == "float" {
+			return mkFloat(val.floatVal)
 		}
 		return mkNumber(val.intVal)
 	case "-":
-		if val.vartype != "number" {
-			panic("[Semantic] Unary '-' requires number")
+		if !isNumeric(val) {
+			panic("[Semantic] Unary '-' requires number or float")
+		}
+		if val.vartype == "float" {
+			return mkFloat(-val.floatVal)
 		}
 		return mkNumber(-val.intVal)
 	case "not":
@@ -411,10 +508,17 @@ type BinOp struct {
 	children []Node
 }
 
-func requireNumbers(l, r variable, op string) {
-	if l.vartype != "number" || r.vartype != "number" {
-		panic(fmt.Sprintf("[Semantic] Operator '%s' requires number operands", op))
+func requireNumeric(l, r variable, op string) {
+	if !isNumeric(l) || !isNumeric(r) {
+		panic(fmt.Sprintf("[Semantic] Operator '%s' requires number or float operands", op))
 	}
+}
+
+func numericResult(l, r variable, iResult int, fResult float64) variable {
+	if l.vartype == "float" || r.vartype == "float" {
+		return mkFloat(fResult)
+	}
+	return mkNumber(iResult)
 }
 
 func (n *BinOp) Evaluate(st *SymbolTable) variable {
@@ -422,22 +526,36 @@ func (n *BinOp) Evaluate(st *SymbolTable) variable {
 	right := n.children[1].Evaluate(st)
 	switch n.value {
 	case "+":
-		requireNumbers(left, right, "+")
-		return mkNumber(left.intVal + right.intVal)
+		requireNumeric(left, right, "+")
+		return numericResult(left, right, left.intVal+right.intVal, toFloat(left)+toFloat(right))
 	case "-":
-		requireNumbers(left, right, "-")
-		return mkNumber(left.intVal - right.intVal)
+		requireNumeric(left, right, "-")
+		return numericResult(left, right, left.intVal-right.intVal, toFloat(left)-toFloat(right))
 	case "*":
-		requireNumbers(left, right, "*")
-		return mkNumber(left.intVal * right.intVal)
+		requireNumeric(left, right, "*")
+		return numericResult(left, right, left.intVal*right.intVal, toFloat(left)*toFloat(right))
 	case "/":
-		requireNumbers(left, right, "/")
+		requireNumeric(left, right, "/")
+		if left.vartype == "float" || right.vartype == "float" {
+			if toFloat(right) == 0 {
+				panic("[Semantic] Division by zero")
+			}
+			return mkFloat(toFloat(left) / toFloat(right))
+		}
 		if right.intVal == 0 {
 			panic("[Semantic] Division by zero")
 		}
 		return mkNumber(left.intVal / right.intVal)
 	case "**":
-		requireNumbers(left, right, "**")
+		requireNumeric(left, right, "**")
+		if left.vartype == "float" || right.vartype == "float" {
+			base, exp := toFloat(left), toFloat(right)
+			result := 1.0
+			for i := 0.0; i < exp; i++ {
+				result *= base
+			}
+			return mkFloat(result)
+		}
 		result := 1
 		for i := 0; i < right.intVal; i++ {
 			result *= left.intVal
@@ -446,6 +564,12 @@ func (n *BinOp) Evaluate(st *SymbolTable) variable {
 	case "..":
 		return mkString(valToString(left) + valToString(right))
 	case "==":
+		if isNumeric(left) && isNumeric(right) {
+			if toFloat(left) == toFloat(right) {
+				return mkBool(1)
+			}
+			return mkBool(0)
+		}
 		if left.vartype != right.vartype {
 			panic(fmt.Sprintf("[Semantic] Type mismatch in '==': %s vs %s", left.vartype, right.vartype))
 		}
@@ -466,8 +590,8 @@ func (n *BinOp) Evaluate(st *SymbolTable) variable {
 			}
 			return mkBool(0)
 		}
-		requireNumbers(left, right, ">")
-		if left.intVal > right.intVal {
+		requireNumeric(left, right, ">")
+		if toFloat(left) > toFloat(right) {
 			return mkBool(1)
 		}
 		return mkBool(0)
@@ -478,8 +602,8 @@ func (n *BinOp) Evaluate(st *SymbolTable) variable {
 			}
 			return mkBool(0)
 		}
-		requireNumbers(left, right, "<")
-		if left.intVal < right.intVal {
+		requireNumeric(left, right, "<")
+		if toFloat(left) < toFloat(right) {
 			return mkBool(1)
 		}
 		return mkBool(0)
@@ -559,6 +683,8 @@ func (n *Print) Evaluate(st *SymbolTable) variable {
 		} else {
 			fmt.Println("false")
 		}
+	case "float":
+		fmt.Println(strconv.FormatFloat(val.floatVal, 'f', -1, 64))
 	default:
 		fmt.Println(val.intVal)
 	}
@@ -723,6 +849,11 @@ func parseAtom(l *Lexer) Node {
 		l.selectNext()
 		return &IntVal{value: val}
 	}
+	if l.Next.Type == FLOAT_LIT {
+		val, _ := strconv.ParseFloat(l.Next.Value, 64)
+		l.selectNext()
+		return &FloatVal{value: val}
+	}
 	if l.Next.Type == IDEN {
 		name := l.Next.Value
 		l.selectNext()
@@ -761,6 +892,20 @@ func parseFactor(l *Lexer) Node {
 	if l.Next.Type == MINUS {
 		l.selectNext()
 		return &UnOp{value: "-", children: []Node{parseFactor(l)}}
+	}
+	// Cast: (TYPE) FACTOR — use lookahead via Save/Restore
+	if l.Next.Type == OPEN_PAR {
+		saved := l.Save()
+		l.selectNext() // consume '('
+		if l.Next.Type == TYPE {
+			castType := l.Next.Value
+			l.selectNext() // consume TYPE
+			if l.Next.Type == CLOSE_PAR {
+				l.selectNext() // consume ')'
+				return &CastNode{targetType: castType, children: []Node{parseFactor(l)}}
+			}
+		}
+		l.Restore(saved) // not a cast, fall through to parsePower/parseAtom
 	}
 	if l.Next.Type == READ {
 		l.selectNext()
