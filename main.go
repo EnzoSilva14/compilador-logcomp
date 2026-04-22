@@ -40,10 +40,11 @@ const (
 	READ      = "READ"
 	THEN      = "THEN"
 	DO        = "DO"
-	FOR       = "FOR"
-	REPEAT    = "REPEAT"
-	UNTIL     = "UNTIL"
-	COMMA     = "COMMA"
+	FOR    = "FOR"
+	REPEAT = "REPEAT"
+	UNTIL  = "UNTIL"
+	COMMA  = "COMMA"
+	CONCAT = "CONCAT" // ..
 	// v2.2
 	VAR  = "VAR"  // "local"
 	BOOL = "BOOL" // "true" / "false"
@@ -206,6 +207,13 @@ func (l *Lexer) selectNext() {
 		} else {
 			panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
 		}
+	case '.':
+		if l.position+1 < len(l.source) && l.source[l.position+1] == '.' {
+			l.Next = Token{Type: CONCAT, Value: ".."}
+			l.position += 2
+		} else {
+			panic(fmt.Sprintf("[Lexer] Invalid Symbol %c", ch))
+		}
 	case ',':
 		l.Next = Token{Type: COMMA, Value: ","}
 		l.position++
@@ -275,6 +283,20 @@ func truthy(v variable) bool {
 		return v.strVal != ""
 	}
 	return v.intVal != 0
+}
+
+func valToString(v variable) string {
+	switch v.vartype {
+	case "string":
+		return v.strVal
+	case "boolean":
+		if v.intVal != 0 {
+			return "true"
+		}
+		return "false"
+	default:
+		return strconv.Itoa(v.intVal)
+	}
 }
 
 type SymbolTable struct {
@@ -372,7 +394,10 @@ func (n *UnOp) Evaluate(st *SymbolTable) variable {
 		}
 		return mkNumber(-val.intVal)
 	case "not":
-		if truthy(val) {
+		if val.vartype != "boolean" {
+			panic("[Semantic] 'not' requires a boolean operand")
+		}
+		if val.intVal != 0 {
 			return mkBool(0)
 		}
 		return mkBool(1)
@@ -397,13 +422,8 @@ func (n *BinOp) Evaluate(st *SymbolTable) variable {
 	right := n.children[1].Evaluate(st)
 	switch n.value {
 	case "+":
-		if left.vartype == "number" && right.vartype == "number" {
-			return mkNumber(left.intVal + right.intVal)
-		}
-		if left.vartype == "string" && right.vartype == "string" {
-			return mkString(left.strVal + right.strVal)
-		}
-		panic("[Semantic] Operator '+' requires both operands to be number or both string")
+		requireNumbers(left, right, "+")
+		return mkNumber(left.intVal + right.intVal)
 	case "-":
 		requireNumbers(left, right, "-")
 		return mkNumber(left.intVal - right.intVal)
@@ -423,6 +443,8 @@ func (n *BinOp) Evaluate(st *SymbolTable) variable {
 			result *= left.intVal
 		}
 		return mkNumber(result)
+	case "..":
+		return mkString(valToString(left) + valToString(right))
 	case "==":
 		if left.vartype != right.vartype {
 			panic(fmt.Sprintf("[Semantic] Type mismatch in '==': %s vs %s", left.vartype, right.vartype))
@@ -438,24 +460,42 @@ func (n *BinOp) Evaluate(st *SymbolTable) variable {
 		}
 		return mkBool(0)
 	case ">":
+		if left.vartype == "string" && right.vartype == "string" {
+			if left.strVal > right.strVal {
+				return mkBool(1)
+			}
+			return mkBool(0)
+		}
 		requireNumbers(left, right, ">")
 		if left.intVal > right.intVal {
 			return mkBool(1)
 		}
 		return mkBool(0)
 	case "<":
+		if left.vartype == "string" && right.vartype == "string" {
+			if left.strVal < right.strVal {
+				return mkBool(1)
+			}
+			return mkBool(0)
+		}
 		requireNumbers(left, right, "<")
 		if left.intVal < right.intVal {
 			return mkBool(1)
 		}
 		return mkBool(0)
 	case "and":
-		if truthy(left) && truthy(right) {
+		if left.vartype != "boolean" || right.vartype != "boolean" {
+			panic("[Semantic] 'and' requires boolean operands")
+		}
+		if left.intVal != 0 && right.intVal != 0 {
 			return mkBool(1)
 		}
 		return mkBool(0)
 	case "or":
-		if truthy(left) || truthy(right) {
+		if left.vartype != "boolean" || right.vartype != "boolean" {
+			panic("[Semantic] 'or' requires boolean operands")
+		}
+		if left.intVal != 0 || right.intVal != 0 {
 			return mkBool(1)
 		}
 		return mkBool(0)
@@ -515,9 +555,9 @@ func (n *Print) Evaluate(st *SymbolTable) variable {
 		fmt.Println(val.strVal)
 	case "boolean":
 		if val.intVal != 0 {
-			fmt.Println("True")
+			fmt.Println("true")
 		} else {
-			fmt.Println("False")
+			fmt.Println("false")
 		}
 	default:
 		fmt.Println(val.intVal)
@@ -746,12 +786,23 @@ func parseExpression(l *Lexer) Node {
 	return result
 }
 
+// parseConcatExpr parses: EXPRESSION { ".." EXPRESSION }  (right-associative)
+func parseConcatExpr(l *Lexer) Node {
+	left := parseExpression(l)
+	if l.Next.Type == CONCAT {
+		l.selectNext()
+		right := parseConcatExpr(l) // right-associative
+		return &BinOp{value: "..", children: []Node{left, right}}
+	}
+	return left
+}
+
 func parseRelExpr(l *Lexer) Node {
-	result := parseExpression(l)
+	result := parseConcatExpr(l)
 	if l.Next.Type == EQ || l.Next.Type == GT || l.Next.Type == LT {
 		op := l.Next.Value
 		l.selectNext()
-		result = &BinOp{value: op, children: []Node{result, parseExpression(l)}}
+		result = &BinOp{value: op, children: []Node{result, parseConcatExpr(l)}}
 	}
 	return result
 }
