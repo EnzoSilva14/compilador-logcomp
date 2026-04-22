@@ -588,7 +588,11 @@ type IfNode struct {
 }
 
 func (n *IfNode) Evaluate(st *SymbolTable) variable {
-	if truthy(n.children[0].Evaluate(st)) {
+	cond := n.children[0].Evaluate(st)
+	if cond.vartype != "boolean" {
+		panic("[Semantic] 'if' condition must be boolean")
+	}
+	if truthy(cond) {
 		n.children[1].Evaluate(st)
 	} else if len(n.children) > 2 {
 		n.children[2].Evaluate(st)
@@ -614,7 +618,14 @@ type WhileNode struct {
 }
 
 func (n *WhileNode) Evaluate(st *SymbolTable) variable {
-	for truthy(n.children[0].Evaluate(st)) {
+	for {
+		cond := n.children[0].Evaluate(st)
+		if cond.vartype != "boolean" {
+			panic("[Semantic] 'while' condition must be boolean")
+		}
+		if !truthy(cond) {
+			break
+		}
 		n.children[1].Evaluate(st)
 	}
 	return mkNumber(0)
