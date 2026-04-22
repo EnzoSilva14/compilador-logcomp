@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -313,10 +314,14 @@ func defaultFor(vartype string) variable {
 }
 
 func truthy(v variable) bool {
-	if v.vartype == "string" {
+	switch v.vartype {
+	case "string":
 		return v.strVal != ""
+	case "float":
+		return v.floatVal != 0
+	default:
+		return v.intVal != 0
 	}
-	return v.intVal != 0
 }
 
 func valToString(v variable) string {
@@ -414,7 +419,7 @@ func (n *CastNode) Evaluate(st *SymbolTable) variable {
 		case "number":
 			return mkNumber(val.intVal)
 		case "float":
-			return mkNumber(int(val.floatVal))
+			return mkNumber(int(math.Round(val.floatVal)))
 		case "boolean":
 			return mkNumber(val.intVal)
 		case "string":
