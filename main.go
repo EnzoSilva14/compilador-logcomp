@@ -1090,19 +1090,17 @@ func parseStatement(l *Lexer) Node {
 
 	if l.Next.Type == DO {
 		l.selectNext()
-		if l.Next.Type != END {
-			panic(fmt.Sprintf("[Parser] Expected newline after 'do' but got %s", l.Next.Type))
+		if l.Next.Type == END {
+			l.selectNext()
 		}
-		l.selectNext()
 		block := parseBlock(l)
 		if l.Next.Type != KW_END {
 			panic(fmt.Sprintf("[Parser] Expected 'end' to close 'do' but got %s", l.Next.Type))
 		}
 		l.selectNext()
-		if l.Next.Type != END {
-			panic(fmt.Sprintf("[Parser] Expected newline after 'end' but got %s", l.Next.Type))
+		if l.Next.Type == END {
+			l.selectNext()
 		}
-		l.selectNext()
 		return block
 	}
 
