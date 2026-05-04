@@ -4,23 +4,39 @@
 
 This repository is monitored by Compiler Tester for automatic compilation status.
 
-## Grammar (EBNF v2.2)
+## Grammar (EBNF v3.0)
 
 ```ebnf
 PROGRAM        = { STATEMENT } ;
-STATEMENT      = ( VARDEC | (IDENTIFIER, "=", BOOLEXPRESSION) | (IF, BOOLEXPRESSION, "then", "\n", BLOCK, ["else", "\n", BLOCK], "end") | (PRINT, "(", BOOLEXPRESSION, ")") | (WHILE, BOOLEXPRESSION, "do", "\n", BLOCK, "end") | (FOR, IDENTIFIER, "=", EXPRESSION, ",", EXPRESSION, [",", EXPRESSION], "do", "\n", BLOCK, "end") | (REPEAT, "\n", BLOCK, "until", BOOLEXPRESSION) | ("do", "\n", BLOCK, "end") | Ε ), EOL ;
+BLOCK          = { STATEMENT } ;
+STATEMENT      = ( VARDEC
+                 | IMUTDEC
+                 | (IDENTIFIER, "=", BOOLEXPRESSION)
+                 | ("if", BOOLEXPRESSION, "then", "\n", BLOCK, ["else", "\n", BLOCK], "end")
+                 | ("print", "(", BOOLEXPRESSION, ")")
+                 | ("while", BOOLEXPRESSION, "do", "\n", BLOCK, "end")
+                 | ("for", IDENTIFIER, "=", EXPRESSION, ",", EXPRESSION, [",", EXPRESSION], "do", "\n", BLOCK, "end")
+                 | ("repeat", "\n", BLOCK, "until", BOOLEXPRESSION)
+                 | ("do", "\n", BLOCK, "end")
+                 | Ε ), EOL ;
 VARDEC         = "local", IDENTIFIER, TYPE, ["=", BOOLEXPRESSION] ;
+IMUTDEC        = "imut", IDENTIFIER, "=", BOOLEXPRESSION ;
 BOOLEXPRESSION = BOOLTERM, { "or", BOOLTERM } ;
-BOOLTERM       = RELEXPRESSION, { "and", RELEXPRESSION } ;
-RELEXPRESSION  = EXPRESSION, [("<" | "==" | ">"), EXPRESSION] ;
+BOOLTERM       = NOTEXPRESSION, { "and", NOTEXPRESSION } ;
+NOTEXPRESSION  = ["not"], RELEXPRESSION ;
+RELEXPRESSION  = CONCATEXPRESSION, [("<" | "==" | ">"), CONCATEXPRESSION] ;
+CONCATEXPRESSION = EXPRESSION, ["..", CONCATEXPRESSION] ;
 EXPRESSION     = TERM, { ("+" | "-"), TERM } ;
 TERM           = FACTOR, { ("*" | "/"), FACTOR } ;
-FACTOR         = ("+"|"-"), FACTOR | READ, "(", ")" | POWER ;
+FACTOR         = ("+"|"-"), FACTOR | "(", TYPE, ")", FACTOR | "read", "(", ")" | POWER ;
 POWER          = ATOM, ["**", FACTOR] ;
-ATOM           = "(", BOOLEXPRESSION, ")" | INT | IDENTIFIER | BOOL | STR | (IF, BOOLEXPRESSION, "then", BOOLEXPRESSION, "else", BOOLEXPRESSION, "end") ;
-TYPE           = "number" | "string" | "boolean" ;
+ATOM           = "(", BOOLEXPRESSION, ")"
+               | INT | FLOAT | BOOL | STR | IDENTIFIER
+               | ("if", BOOLEXPRESSION, "then", BOOLEXPRESSION, "else", BOOLEXPRESSION, "end") ;
+TYPE           = "number" | "string" | "boolean" | "float" ;
 BOOL           = "true" | "false" ;
 INT            = DIGIT, { DIGIT } ;
+FLOAT          = DIGIT, { DIGIT }, ".", { DIGIT } ;
 STR            = '"', { CHAR }, '"' ;
 IDENTIFIER     = LETTER, { LETTER | DIGIT | "_" } ;
 DIGIT          = 0 | 1 | ... | 9 ;

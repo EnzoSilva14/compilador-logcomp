@@ -282,6 +282,7 @@ type variable struct {
 	strVal   string
 	vartype  string // "number", "float", "string", "boolean"
 	immut    bool
+	shift    int // stack offset for code generation (e.g. 4 means [EBP-4])
 }
 
 func mkNumber(v int) variable      { return variable{intVal: v, vartype: "number"} }
@@ -341,7 +342,8 @@ func valToString(v variable) string {
 }
 
 type SymbolTable struct {
-	table map[string]variable
+	table     map[string]variable
+	nextShift int
 }
 
 func NewSymbolTable() *SymbolTable {
@@ -382,17 +384,22 @@ func (st *SymbolTable) SetImut(name string, val variable) {
 }
 
 // CreateVariable declares a variable with a given type and default value.
+// It also allocates a 4-byte stack slot for code generation.
 func (st *SymbolTable) CreateVariable(name string, vartype string) {
 	if _, ok := st.table[name]; ok {
 		panic(fmt.Sprintf("[Semantic] Variable '%s' already declared", name))
 	}
-	st.table[name] = defaultFor(vartype)
+	st.nextShift += 4
+	v := defaultFor(vartype)
+	v.shift = st.nextShift
+	st.table[name] = v
 }
 
 // ── AST ───────────────────────────────────────────────────────────────────────
 
 type Node interface {
 	Evaluate(st *SymbolTable) variable
+	Generate(st *SymbolTable)
 }
 
 // IntVal
@@ -1236,6 +1243,304 @@ func run(source string) Node {
 	return parseProgram(NewLexer(source))
 }
 
+// ── Code Generator ────────────────────────────────────────────────────────────
+
+var codeInstructions []string
+
+func codeAppend(line string) {
+	codeInstructions = append(codeInstructions, line)
+}
+
+func codeDump(filename string) {
+	f, err := os.Create(filename)
+	if err != nil {
+		panic(fmt.Sprintf("[Main] Cannot create asm file: %v", err))
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "section .data\n")
+	fmt.Fprintf(f, "  format_out: db \"%%d\", 10, 0\n")
+	fmt.Fprintf(f, "  format_in: db \"%%d\", 0\n")
+	fmt.Fprintf(f, "  scan_int: dd 0\n\n")
+	fmt.Fprintf(f, "section .text\n")
+	fmt.Fprintf(f, "  extern printf\n")
+	fmt.Fprintf(f, "  extern scanf\n")
+	fmt.Fprintf(f, "  global _start\n\n")
+	fmt.Fprintf(f, "_start:\n")
+	fmt.Fprintf(f, "  push ebp\n")
+	fmt.Fprintf(f, "  mov ebp, esp\n\n")
+	for _, line := range codeInstructions {
+		fmt.Fprintf(f, "%s\n", line)
+	}
+	fmt.Fprintf(f, "\n  mov esp, ebp\n")
+	fmt.Fprintf(f, "  pop ebp\n")
+	fmt.Fprintf(f, "  mov eax, 1\n")
+	fmt.Fprintf(f, "  xor ebx, ebx\n")
+	fmt.Fprintf(f, "  int 0x80\n")
+}
+
+var nodeIDCounter int
+
+func newNodeID() int {
+	nodeIDCounter++
+	return nodeIDCounter
+}
+
+// IntVal
+func (n *IntVal) Generate(_ *SymbolTable) {
+	codeAppend(fmt.Sprintf("  mov eax, %d", n.value))
+}
+
+// FloatVal
+func (n *FloatVal) Generate(_ *SymbolTable) {
+	panic("[CodeGen] float not supported in assembly generation")
+}
+
+// BoolVal
+func (n *BoolVal) Generate(_ *SymbolTable) {
+	codeAppend(fmt.Sprintf("  mov eax, %d", n.value))
+}
+
+// StringVal
+func (n *StringVal) Generate(_ *SymbolTable) {
+	panic("[CodeGen] string not supported in assembly generation")
+}
+
+// CastNode
+func (n *CastNode) Generate(_ *SymbolTable) {
+	panic("[CodeGen] cast not supported in assembly generation")
+}
+
+// Identifier
+func (n *Identifier) Generate(st *SymbolTable) {
+	v := st.Get(n.value)
+	codeAppend(fmt.Sprintf("  mov eax, [ebp-%d]", v.shift))
+}
+
+// UnOp — result always in EAX
+func (n *UnOp) Generate(st *SymbolTable) {
+	n.children[0].Generate(st)
+	switch n.value {
+	case "+":
+		// no-op
+	case "-":
+		codeAppend("  neg eax")
+	case "not":
+		codeAppend("  xor eax, 1")
+	}
+}
+
+// BinOp — convention: generate right → push; generate left → EAX; pop ECX; op EAX, ECX
+func (n *BinOp) Generate(st *SymbolTable) {
+	n.children[1].Generate(st) // right → EAX
+	codeAppend("  push eax")
+	n.children[0].Generate(st) // left → EAX
+	codeAppend("  pop ecx")    // ECX = right
+	switch n.value {
+	case "+":
+		codeAppend("  add eax, ecx")
+	case "-":
+		codeAppend("  sub eax, ecx")
+	case "*":
+		codeAppend("  imul ecx")
+	case "/":
+		codeAppend("  cdq")
+		codeAppend("  idiv ecx")
+	case "==":
+		codeAppend("  cmp eax, ecx")
+		codeAppend("  mov eax, 0")
+		codeAppend("  mov ecx, 1")
+		codeAppend("  cmove eax, ecx")
+	case ">":
+		codeAppend("  cmp eax, ecx")
+		codeAppend("  mov eax, 0")
+		codeAppend("  mov ecx, 1")
+		codeAppend("  cmovg eax, ecx")
+	case "<":
+		codeAppend("  cmp eax, ecx")
+		codeAppend("  mov eax, 0")
+		codeAppend("  mov ecx, 1")
+		codeAppend("  cmovl eax, ecx")
+	case "and":
+		codeAppend("  and eax, ecx")
+	case "or":
+		codeAppend("  or eax, ecx")
+	case "**", "..":
+		panic(fmt.Sprintf("[CodeGen] operator '%s' not supported in assembly generation", n.value))
+	default:
+		panic(fmt.Sprintf("[CodeGen] unknown operator: %s", n.value))
+	}
+}
+
+// Assignment
+func (n *Assignment) Generate(st *SymbolTable) {
+	name := n.children[0].(*Identifier).value
+	n.children[1].Generate(st)
+	v := st.Get(name)
+	codeAppend(fmt.Sprintf("  mov [ebp-%d], eax", v.shift))
+}
+
+// ImutAssignment — allocates a stack slot on first encounter
+func (n *ImutAssignment) Generate(st *SymbolTable) {
+	name := n.children[0].(*Identifier).value
+	if _, ok := st.table[name]; !ok {
+		st.nextShift += 4
+		v := mkNumber(0)
+		v.shift = st.nextShift
+		v.immut = true
+		st.table[name] = v
+		codeAppend(fmt.Sprintf("  sub esp, 4 ; imut %s [EBP-%d]", name, st.nextShift))
+	}
+	n.children[1].Generate(st)
+	v := st.Get(name)
+	codeAppend(fmt.Sprintf("  mov [ebp-%d], eax", v.shift))
+}
+
+// VarDec
+func (n *VarDec) Generate(st *SymbolTable) {
+	name := n.children[0].(*Identifier).value
+	st.CreateVariable(name, n.vartype)
+	v := st.table[name]
+	codeAppend(fmt.Sprintf("  sub esp, 4 ; var %s [EBP-%d]", name, v.shift))
+	if len(n.children) > 1 {
+		n.children[1].Generate(st)
+		codeAppend(fmt.Sprintf("  mov [ebp-%d], eax", v.shift))
+	}
+}
+
+// Print
+func (n *Print) Generate(st *SymbolTable) {
+	n.children[0].Generate(st)
+	codeAppend("  push eax")
+	codeAppend("  push format_out")
+	codeAppend("  call printf")
+	codeAppend("  add esp, 8")
+}
+
+// Block
+func (n *Block) Generate(st *SymbolTable) {
+	for _, child := range n.children {
+		child.Generate(st)
+	}
+}
+
+// NoOp
+func (n *NoOp) Generate(_ *SymbolTable) {}
+
+// IfNode
+func (n *IfNode) Generate(st *SymbolTable) {
+	id := newNodeID()
+	n.children[0].Generate(st) // condition → EAX
+	if len(n.children) == 2 {
+		codeAppend("  cmp eax, 0")
+		codeAppend(fmt.Sprintf("  je exit_%d", id))
+		n.children[1].Generate(st)
+		codeAppend(fmt.Sprintf("exit_%d:", id))
+	} else {
+		codeAppend("  cmp eax, 0")
+		codeAppend(fmt.Sprintf("  je else_%d", id))
+		n.children[1].Generate(st)
+		codeAppend(fmt.Sprintf("  jmp exit_%d", id))
+		codeAppend(fmt.Sprintf("else_%d:", id))
+		n.children[2].Generate(st)
+		codeAppend(fmt.Sprintf("exit_%d:", id))
+	}
+}
+
+// IfExpr (inline if)
+func (n *IfExpr) Generate(st *SymbolTable) {
+	id := newNodeID()
+	n.children[0].Generate(st) // condition → EAX
+	codeAppend("  cmp eax, 0")
+	codeAppend(fmt.Sprintf("  je else_%d", id))
+	n.children[1].Generate(st) // then → EAX
+	codeAppend(fmt.Sprintf("  jmp exit_%d", id))
+	codeAppend(fmt.Sprintf("else_%d:", id))
+	n.children[2].Generate(st) // else → EAX
+	codeAppend(fmt.Sprintf("exit_%d:", id))
+}
+
+// WhileNode
+func (n *WhileNode) Generate(st *SymbolTable) {
+	id := newNodeID()
+	codeAppend(fmt.Sprintf("loop_%d:", id))
+	n.children[0].Generate(st) // condition → EAX
+	codeAppend("  cmp eax, 0")
+	codeAppend(fmt.Sprintf("  je exit_%d", id))
+	n.children[1].Generate(st) // body
+	codeAppend(fmt.Sprintf("  jmp loop_%d", id))
+	codeAppend(fmt.Sprintf("exit_%d:", id))
+}
+
+// ForNode — children: [start, limit, body] or [start, limit, step, body]
+func (n *ForNode) Generate(st *SymbolTable) {
+	if _, ok := st.table[n.varName]; !ok {
+		st.nextShift += 4
+		v := mkNumber(0)
+		v.shift = st.nextShift
+		st.table[n.varName] = v
+		codeAppend(fmt.Sprintf("  sub esp, 4 ; for %s [EBP-%d]", n.varName, st.nextShift))
+	}
+	varShift := st.table[n.varName].shift
+
+	n.children[0].Generate(st) // start → EAX
+	codeAppend(fmt.Sprintf("  mov [ebp-%d], eax", varShift))
+
+	id := newNodeID()
+	body := n.children[2]
+	var stepNode Node
+	if len(n.children) == 4 {
+		stepNode = n.children[2]
+		body = n.children[3]
+	}
+
+	codeAppend(fmt.Sprintf("loop_%d:", id))
+	n.children[1].Generate(st) // limit → EAX
+	codeAppend("  push eax")
+	codeAppend(fmt.Sprintf("  mov eax, [ebp-%d]", varShift))
+	codeAppend("  pop ecx")
+	codeAppend("  cmp eax, ecx")
+	codeAppend("  mov eax, 0")
+	codeAppend("  mov ecx, 1")
+	codeAppend("  cmovle eax, ecx")
+	codeAppend("  cmp eax, 0")
+	codeAppend(fmt.Sprintf("  je exit_%d", id))
+
+	body.Generate(st)
+
+	if stepNode != nil {
+		stepNode.Generate(st) // step → EAX
+		codeAppend("  push eax")
+		codeAppend(fmt.Sprintf("  mov eax, [ebp-%d]", varShift))
+		codeAppend("  pop ecx")
+		codeAppend("  add eax, ecx")
+	} else {
+		codeAppend(fmt.Sprintf("  mov eax, [ebp-%d]", varShift))
+		codeAppend("  add eax, 1")
+	}
+	codeAppend(fmt.Sprintf("  mov [ebp-%d], eax", varShift))
+	codeAppend(fmt.Sprintf("  jmp loop_%d", id))
+	codeAppend(fmt.Sprintf("exit_%d:", id))
+}
+
+// RepeatNode — repeat body until condition is true
+func (n *RepeatNode) Generate(st *SymbolTable) {
+	id := newNodeID()
+	codeAppend(fmt.Sprintf("loop_%d:", id))
+	n.children[0].Generate(st) // body
+	n.children[1].Generate(st) // condition → EAX
+	codeAppend("  cmp eax, 0")
+	codeAppend(fmt.Sprintf("  je loop_%d", id))
+}
+
+// ReadVal
+func (n *ReadVal) Generate(_ *SymbolTable) {
+	codeAppend("  push scan_int")
+	codeAppend("  push format_in")
+	codeAppend("  call scanf")
+	codeAppend("  add esp, 8")
+	codeAppend("  mov eax, [scan_int]")
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		panic("[Main] Nenhum argumento fornecido. Uso: go run main.go arquivo.lua")
@@ -1246,5 +1551,8 @@ func main() {
 	}
 	source := string(data) + "\n"
 	source = PrePro{}.Filter(source)
-	run(source).Evaluate(NewSymbolTable())
+	ast := run(source)
+	ast.Generate(NewSymbolTable())
+	asmFile := strings.TrimSuffix(os.Args[1], ".lua") + ".asm"
+	codeDump(asmFile)
 }
