@@ -1147,6 +1147,26 @@ func parseStatement(l *Lexer) Node {
 	if l.Next.Type == IDEN {
 		name := l.Next.Value
 		l.selectNext()
+		if l.Next.Type == OPEN_PAR {
+			// Function call as statement (return value discarded)
+			l.selectNext()
+			var args []Node
+			if l.Next.Type != CLOSE_PAR {
+				args = append(args, parseBoolExpr(l))
+				for l.Next.Type == COMMA {
+					l.selectNext()
+					args = append(args, parseBoolExpr(l))
+				}
+			}
+			if l.Next.Type != CLOSE_PAR {
+				panic(fmt.Sprintf("[Parser] Expected ')' in call to '%s' but got %s", name, l.Next.Type))
+			}
+			l.selectNext()
+			if l.Next.Type == END {
+				l.selectNext()
+			}
+			return &FuncCall{name: name, children: args}
+		}
 		if l.Next.Type != ASSIGN {
 			panic(fmt.Sprintf("[Parser] Expected '=' but got %s", l.Next.Type))
 		}
@@ -1328,6 +1348,9 @@ func parseStatement(l *Lexer) Node {
 			}
 			params = append(params, l.Next.Value)
 			l.selectNext()
+			if l.Next.Type == TYPE { // optional param type annotation
+				l.selectNext()
+			}
 			for l.Next.Type == COMMA {
 				l.selectNext()
 				if l.Next.Type != IDEN {
@@ -1335,12 +1358,18 @@ func parseStatement(l *Lexer) Node {
 				}
 				params = append(params, l.Next.Value)
 				l.selectNext()
+				if l.Next.Type == TYPE { // optional param type annotation
+					l.selectNext()
+				}
 			}
 		}
 		if l.Next.Type != CLOSE_PAR {
 			panic(fmt.Sprintf("[Parser] Expected ')' in function definition but got %s", l.Next.Type))
 		}
 		l.selectNext()
+		if l.Next.Type == TYPE { // optional return type annotation
+			l.selectNext()
+		}
 		if l.Next.Type != END {
 			panic(fmt.Sprintf("[Parser] Expected newline after function signature but got %s", l.Next.Type))
 		}
