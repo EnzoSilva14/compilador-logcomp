@@ -52,6 +52,9 @@ const (
 	BOOL = "BOOL" // "true" / "false"
 	STR  = "STR"  // string literal
 	TYPE = "TYPE" // "number" / "string" / "boolean" / "float"
+	// v2.3
+	FUNCTION = "FUNCTION" // "function"
+	RETURN   = "RETURN"   // "return"
 )
 
 type Token struct {
@@ -157,6 +160,10 @@ func (l *Lexer) selectNext() {
 			l.Next = Token{Type: BOOL, Value: word}
 		case "number", "string", "boolean", "float":
 			l.Next = Token{Type: TYPE, Value: word}
+		case "function":
+			l.Next = Token{Type: FUNCTION, Value: word}
+		case "return":
+			l.Next = Token{Type: RETURN, Value: word}
 		default:
 			l.Next = Token{Type: IDEN, Value: word}
 		}
@@ -282,7 +289,8 @@ type variable struct {
 	strVal   string
 	vartype  string // "number", "float", "string", "boolean"
 	immut    bool
-	shift    int // stack offset for code generation (e.g. 4 means [EBP-4])
+	shift    int  // stack offset for code generation (e.g. 4 means [EBP-4])
+	isParam  bool // if true, access via [EBP+shift] instead of [EBP-shift]
 }
 
 func mkNumber(v int) variable      { return variable{intVal: v, vartype: "number"} }
@@ -822,6 +830,71 @@ func (n *ReadVal) Evaluate(_ *SymbolTable) variable {
 	return mkNumber(val)
 }
 
+// ── Functions ─────────────────────────────────────────────────────────────────
+
+// globalFuncTable stores all declared functions by name.
+var globalFuncTable = map[string]*FuncDef{}
+
+// returnValue is used as a panic payload to propagate return values.
+type returnValue struct{ val variable }
+
+// FuncDef: "function" NAME "(" params ")" "\n" BLOCK "end"
+type FuncDef struct {
+	name   string
+	params []string
+	body   Node
+}
+
+func (n *FuncDef) Evaluate(st *SymbolTable) variable {
+	globalFuncTable[n.name] = n
+	return mkNumber(0)
+}
+
+// FuncCall: NAME "(" args ")"
+type FuncCall struct {
+	name     string
+	children []Node // arguments
+}
+
+func (n *FuncCall) Evaluate(st *SymbolTable) variable {
+	def, ok := globalFuncTable[n.name]
+	if !ok {
+		panic(fmt.Sprintf("[Semantic] Undefined function: %s", n.name))
+	}
+	if len(n.children) != len(def.params) {
+		panic(fmt.Sprintf("[Semantic] Function '%s' expects %d args but got %d",
+			n.name, len(def.params), len(n.children)))
+	}
+	funcST := NewSymbolTable()
+	for i, param := range def.params {
+		funcST.table[param] = n.children[i].Evaluate(st)
+	}
+	var result variable
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if rv, ok := r.(returnValue); ok {
+					result = rv.val
+				} else {
+					panic(r)
+				}
+			}
+		}()
+		def.body.Evaluate(funcST)
+	}()
+	return result
+}
+
+// ReturnNode: "return" EXPR
+type ReturnNode struct {
+	children []Node // [expr]
+}
+
+func (n *ReturnNode) Evaluate(st *SymbolTable) variable {
+	val := n.children[0].Evaluate(st)
+	panic(returnValue{val})
+}
+
 // ── Parser ────────────────────────────────────────────────────────────────────
 
 // Forward declarations handled by Go's package-level functions.
@@ -869,6 +942,22 @@ func parseAtom(l *Lexer) Node {
 	if l.Next.Type == IDEN {
 		name := l.Next.Value
 		l.selectNext()
+		if l.Next.Type == OPEN_PAR {
+			l.selectNext() // consume '('
+			var args []Node
+			if l.Next.Type != CLOSE_PAR {
+				args = append(args, parseBoolExpr(l))
+				for l.Next.Type == COMMA {
+					l.selectNext()
+					args = append(args, parseBoolExpr(l))
+				}
+			}
+			if l.Next.Type != CLOSE_PAR {
+				panic(fmt.Sprintf("[Parser] Expected ')' in call to '%s' but got %s", name, l.Next.Type))
+			}
+			l.selectNext()
+			return &FuncCall{name: name, children: args}
+		}
 		return &Identifier{value: name}
 	}
 	if l.Next.Type == BOOL {
@@ -1221,6 +1310,61 @@ func parseStatement(l *Lexer) Node {
 		return &RepeatNode{children: []Node{body, cond}}
 	}
 
+	if l.Next.Type == FUNCTION {
+		l.selectNext()
+		if l.Next.Type != IDEN {
+			panic(fmt.Sprintf("[Parser] Expected function name but got %s", l.Next.Type))
+		}
+		name := l.Next.Value
+		l.selectNext()
+		if l.Next.Type != OPEN_PAR {
+			panic(fmt.Sprintf("[Parser] Expected '(' after function name but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		var params []string
+		if l.Next.Type != CLOSE_PAR {
+			if l.Next.Type != IDEN {
+				panic(fmt.Sprintf("[Parser] Expected parameter name but got %s", l.Next.Type))
+			}
+			params = append(params, l.Next.Value)
+			l.selectNext()
+			for l.Next.Type == COMMA {
+				l.selectNext()
+				if l.Next.Type != IDEN {
+					panic(fmt.Sprintf("[Parser] Expected parameter name but got %s", l.Next.Type))
+				}
+				params = append(params, l.Next.Value)
+				l.selectNext()
+			}
+		}
+		if l.Next.Type != CLOSE_PAR {
+			panic(fmt.Sprintf("[Parser] Expected ')' in function definition but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type != END {
+			panic(fmt.Sprintf("[Parser] Expected newline after function signature but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		body := parseBlock(l)
+		if l.Next.Type != KW_END {
+			panic(fmt.Sprintf("[Parser] Expected 'end' to close function but got %s", l.Next.Type))
+		}
+		l.selectNext()
+		if l.Next.Type == END {
+			l.selectNext()
+		}
+		return &FuncDef{name: name, params: params, body: body}
+	}
+
+	if l.Next.Type == RETURN {
+		l.selectNext()
+		expr := parseBoolExpr(l)
+		if l.Next.Type == END {
+			l.selectNext()
+		}
+		return &ReturnNode{children: []Node{expr}}
+	}
+
 	if l.Next.Type == END {
 		l.selectNext()
 		return &NoOp{}
@@ -1244,9 +1388,11 @@ func run(source string) Node {
 // ── Code Generator ────────────────────────────────────────────────────────────
 
 var codeInstructions []string
+var funcInstructions []string
+var currentBuffer = &codeInstructions
 
 func codeAppend(line string) {
-	codeInstructions = append(codeInstructions, line)
+	*currentBuffer = append(*currentBuffer, line)
 }
 
 func codeDump(filename string) {
@@ -1274,6 +1420,12 @@ func codeDump(filename string) {
 	fmt.Fprintf(f, "  mov eax, 1\n")
 	fmt.Fprintf(f, "  xor ebx, ebx\n")
 	fmt.Fprintf(f, "  int 0x80\n")
+	if len(funcInstructions) > 0 {
+		fmt.Fprintf(f, "\n")
+		for _, line := range funcInstructions {
+			fmt.Fprintf(f, "%s\n", line)
+		}
+	}
 }
 
 var nodeIDCounter int
@@ -1311,7 +1463,11 @@ func (n *CastNode) Generate(_ *SymbolTable) {
 // Identifier
 func (n *Identifier) Generate(st *SymbolTable) {
 	v := st.Get(n.value)
-	codeAppend(fmt.Sprintf("  mov eax, [ebp-%d]", v.shift))
+	if v.isParam {
+		codeAppend(fmt.Sprintf("  mov eax, [ebp+%d]", v.shift))
+	} else {
+		codeAppend(fmt.Sprintf("  mov eax, [ebp-%d]", v.shift))
+	}
 }
 
 // UnOp — result always in EAX
@@ -1374,7 +1530,11 @@ func (n *Assignment) Generate(st *SymbolTable) {
 	name := n.children[0].(*Identifier).value
 	n.children[1].Generate(st)
 	v := st.Get(name)
-	codeAppend(fmt.Sprintf("  mov [ebp-%d], eax", v.shift))
+	if v.isParam {
+		codeAppend(fmt.Sprintf("  mov [ebp+%d], eax", v.shift))
+	} else {
+		codeAppend(fmt.Sprintf("  mov [ebp-%d], eax", v.shift))
+	}
 }
 
 // ImutAssignment — allocates a stack slot on first encounter
@@ -1537,6 +1697,54 @@ func (n *ReadVal) Generate(_ *SymbolTable) {
 	codeAppend("  call scanf")
 	codeAppend("  add esp, 8")
 	codeAppend("  mov eax, [scan_int]")
+}
+
+// FuncDef — emits subroutine into funcInstructions buffer
+func (n *FuncDef) Generate(_ *SymbolTable) {
+	globalFuncTable[n.name] = n
+
+	old := currentBuffer
+	currentBuffer = &funcInstructions
+
+	// Build a fresh symbol table with params at [EBP+8], [EBP+12], ...
+	funcST := NewSymbolTable()
+	for i, param := range n.params {
+		v := mkNumber(0)
+		v.shift = 8 + i*4
+		v.isParam = true
+		funcST.table[param] = v
+	}
+
+	codeAppend(fmt.Sprintf("func_%s:", n.name))
+	codeAppend("  push ebp")
+	codeAppend("  mov ebp, esp")
+	n.body.Generate(funcST)
+	// default fall-through return
+	codeAppend("  mov esp, ebp")
+	codeAppend("  pop ebp")
+	codeAppend("  ret")
+
+	currentBuffer = old
+}
+
+// FuncCall — pushes args right-to-left, calls subroutine; result in EAX
+func (n *FuncCall) Generate(st *SymbolTable) {
+	for i := len(n.children) - 1; i >= 0; i-- {
+		n.children[i].Generate(st)
+		codeAppend("  push eax")
+	}
+	codeAppend(fmt.Sprintf("  call func_%s", n.name))
+	if len(n.children) > 0 {
+		codeAppend(fmt.Sprintf("  add esp, %d", len(n.children)*4))
+	}
+}
+
+// ReturnNode — stores value in EAX and tears down the frame
+func (n *ReturnNode) Generate(st *SymbolTable) {
+	n.children[0].Generate(st)
+	codeAppend("  mov esp, ebp")
+	codeAppend("  pop ebp")
+	codeAppend("  ret")
 }
 
 func main() {
